@@ -1,0 +1,23 @@
+#!/bin/sh
+# Copies a live-comments link to the clipboard: the handler of lc-copy:<link> links
+# that the Claude Code status line puts on the ⧉ icon. Takes the URI
+# lc-copy:<link>, copies <link> with wl-copy (Wayland), xclip or xsel (X11) and
+# reports it with notify-send when it is installed. Links outside the
+# live-comments server are ignored, so that a foreign lc-copy: link cannot put
+# arbitrary text into the clipboard.
+link=${1#lc-copy:}
+case $link in
+  http://127.0.0.1:8765/*) ;;
+  *) exit 1 ;;
+esac
+copy() {
+  if [ -n "$WAYLAND_DISPLAY" ] && command -v wl-copy >/dev/null 2>&1; then wl-copy
+  elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard
+  elif command -v xsel >/dev/null 2>&1; then xsel --clipboard --input
+  else return 1
+  fi
+}
+printf '%s' "$link" | copy || exit 1
+if command -v notify-send >/dev/null 2>&1; then
+  notify-send -t 2000 "Link copied" "$link"
+fi

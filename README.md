@@ -36,6 +36,16 @@ Run `/live-comments` (or `/live-comments:live-comments` if another command alrea
 
 Press `?` on any discussion page for keyboard shortcuts. Ask Claude to finish the discussion to get a summary of decisions and open questions.
 
+### Status line
+
+Run `/live-comments:statusline` to show the session's discussion in the Claude Code status line:
+
+```
+[2] http://127.0.0.1:8765/<session id> ⧉
+```
+
+The number is the count of open topics; Ctrl+click (Cmd+click on macOS) on ⧉ copies the link. Claude adds the line below your current status line, or makes it the status line if there is none, and installs the handler of `lc-copy:` links for the ⧉ icon: a `.desktop` file on Linux, an AppleScript applet on macOS. `/live-comments:statusline remove` undoes it. How it works, the requirements and the manual steps are in [the skill's instructions](plugins/live-comments/skills/statusline/SKILL.md).
+
 ### Requirements
 
 - Linux or macOS
