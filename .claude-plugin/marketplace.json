@@ -1,0 +1,14 @@
+{
+  "name": "rodnover55",
+  "description": "Claude Code plugins by Sergei Melnikov",
+  "owner": {
+    "name": "Sergei Melnikov"
+  },
+  "plugins": [
+    {
+      "name": "live-comments",
+      "source": "./plugins/live-comments",
+      "description": "Live discussion pages for a Claude Code session: a tree of questions answered in the same session, comments on HTML pages, and a VS Code-like review of git changes"
+    }
+  ]
+}

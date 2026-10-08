@@ -1,0 +1,10 @@
+{
+  "name": "live-comments",
+  "version": "1.0.0",
+  "description": "Live discussion pages for a Claude Code session: a tree of questions answered in the same session, comments on HTML pages, and a VS Code-like review of git changes",
+  "author": {
+    "name": "Sergei Melnikov"
+  },
+  "repository": "https://github.com/rodnover55/claude-plugins",
+  "keywords": ["discussion", "review", "comments", "git", "html"]
+}
