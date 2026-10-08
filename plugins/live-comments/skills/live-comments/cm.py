@@ -73,12 +73,14 @@ import statusfeed
 HERE = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "live-comments/sessions"
 SERVER_LOG = DATA.parent / "server.log"
-# Marks of sessions closed by leave while auto-apply was on.
+# Auto-apply of each session closed by leave: the next open of the session takes it.
 KEPT_AUTO_APPLY = DATA / "auto-apply"
+# Auto-apply last chosen by the user in any session: new sessions start with it.
+AUTO_APPLY_DEFAULT = DATA.parent / "auto-apply-default"
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 12
+VERSION = 13
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -101,6 +103,21 @@ def title_of(t):
         return t["title"]
     line = " ".join((t["messages"][0]["text"] if t["messages"] else "").split())
     return line[:89] + "…" if len(line) > 90 else line
+
+
+def read_auto_apply(path):
+    """Returns auto-apply recorded in file path: True — on, False — off, None
+    — no file. An empty file, the mark of earlier versions, means on."""
+    try:
+        return path.read_text(encoding="utf-8").strip() != "off"
+    except FileNotFoundError:
+        return None
+
+
+def write_auto_apply(path, on):
+    """Records auto-apply on or off in file path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("on" if on else "off", encoding="utf-8")
 
 
 def answered(t):
@@ -163,17 +180,15 @@ class Store:
         """Deletes session sid and wakes those waiting: their requests to the
         session get a 410 response. The session file moves to deleted/, from
         where wait or leave of the session returns the closed_report to
-        Claude and erases the file. Auto-apply that was on is marked by a
-        file in KEPT_AUTO_APPLY: the next open of the session takes it."""
+        Claude and erases the file. Auto-apply of the session, on or off, is
+        kept in KEPT_AUTO_APPLY: the next open of the session takes it."""
         s = self.sessions.pop(sid, None)
         self.working.pop(sid, None)
         self.status.pop(sid, None)
         self.deleted.add(sid)
         if s:
             self.save(s)
-            if s.get("autoApply"):
-                KEPT_AUTO_APPLY.mkdir(exist_ok=True)
-                (KEPT_AUTO_APPLY / sid).touch()
+            write_auto_apply(KEPT_AUTO_APPLY / sid, bool(s.get("autoApply")))
         path = DATA / (sid + ".json")
         if path.exists():
             (DATA / "deleted").mkdir(exist_ok=True)
@@ -820,10 +835,14 @@ def make_handler(store, feed):
             (DATA / "deleted" / (sid + ".json")).unlink(missing_ok=True)
             s = store.sessions.get(sid)
             if not s:
-                # A new discussion of the session inherits auto-apply from the previous one.
+                # A new discussion of the session inherits auto-apply from the
+                # previous one, and a new session takes the last one the user chose.
                 kept = KEPT_AUTO_APPLY / sid
+                on = read_auto_apply(kept)
+                if on is None:
+                    on = bool(read_auto_apply(AUTO_APPLY_DEFAULT))
                 s = store.sessions[sid] = {"session": sid, "created": now(), "rev": 0, "topics": [],
-                                           "autoApply": now() if kept.exists() else None}
+                                           "autoApply": now() if on else None}
                 kept.unlink(missing_ok=True)
             s.update(label=data.get("label") or s.get("label") or sid[:8], connected=True, lastSeen=now())
             # Only cm.py open sets the repository: pages in the browser send Origin.
@@ -863,12 +882,14 @@ def make_handler(store, feed):
             auto-apply — the resolved ones are applied by themselves every time
             no open topics are left; {on: false} turns it off. If no open
             topics are left when it is turned on, the resolved ones are applied
-            at once."""
+            at once. The choice becomes the auto-apply of new sessions; other
+            existing sessions keep theirs."""
             s = store.sessions.get(sid)
             if not s:
                 self.fail(*store.missing(sid))
                 return
             s["autoApply"] = now() if data.get("on") else None
+            write_auto_apply(AUTO_APPLY_DEFAULT, bool(data.get("on")))
             applied = store.auto_apply(s)
             store.save(s)
             self.send_json({"autoApply": s["autoApply"], "applied": applied,
@@ -1281,7 +1302,7 @@ def format_apply(res):
     order to carry out the plan, the plan from the decisions of the removed
     topics and every removed topic in full."""
     done = res["apply"]["topics"]
-    why = ("No open questions are left, and auto-apply, which the user turned on in the "
+    why = ("No open questions are left, and auto-apply, turned on by the user in the "
            "“Apply resolved” menu, fired" if res["apply"].get("auto") else "The user pressed “Apply resolved”")
     return "\n".join([f"{why} in the discussion “{res.get('label')}”: carry out the plan. "
                       "Resolved and declined questions are removed from the discussion; below is their only copy. "

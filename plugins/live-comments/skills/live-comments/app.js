@@ -659,8 +659,9 @@
   // The "Apply resolved" button, available when at least one question is
   // resolved, and the arrow of its menu: turn on auto-apply — the resolved
   // ones apply by themselves as soon as no open questions are left — or
-  // cancel it. While auto-apply waits, a badge with the number of open
-  // questions stands next to it.
+  // cancel it. Auto-apply belongs to the whole session, and the choice also
+  // becomes the auto-apply of new sessions. While auto-apply waits, a badge
+  // with the number of open questions stands next to it.
   function applyEl() {
     var box = make("div", "lc-split");
     var b = button("Apply resolved", "apply-session", "primary");
@@ -683,10 +684,10 @@
       var item = st.autoApply ? button("Cancel auto-apply", "auto-apply-off", "lc-menu-item") :
         button("Apply when all questions are resolved", "auto-apply-on", "lc-menu-item");
       item.appendChild(make("span", "lc-menu-hint", st.autoApply ?
-        "The resolved ones stay in the discussion until “Apply resolved” is pressed" :
-        open ? "The resolved ones go to Claude for execution as soon as no open questions are left" :
-        "No open questions: apply right away"));
-      item.disabled = !st.autoApply && !open;
+        "The resolved ones stay in the discussion until “Apply resolved” is pressed; new sessions start without auto-apply" :
+        (!open && n ? "No open questions: apply right away" :
+          "The resolved ones go to Claude for execution as soon as no open questions are left") +
+        "; new sessions start with auto-apply"));
       menu.appendChild(item);
       box.appendChild(menu);
     }
@@ -1139,7 +1140,8 @@
         render();
         request("/api/sessions/" + encodeURIComponent(SID) + "/auto-apply", { on: name === "auto-apply-on" }).then(function (r) {
           toast(r.applied ? "No open questions: the resolved ones were applied, the plan went to Claude" :
-            r.autoApply ? "The resolved ones will apply when all questions are resolved" : "Auto-apply cancelled");
+            r.autoApply ? "The resolved ones will apply when all questions are resolved; new sessions start with auto-apply" :
+            "Auto-apply cancelled; new sessions start without it");
         }, failed);
         break;
       case "decline":
