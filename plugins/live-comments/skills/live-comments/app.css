@@ -118,6 +118,28 @@ a:hover{text-decoration:underline}
 .lc-keys .lc-key{margin-left:0;font-size:12px}
 .lc-sessions{padding-left:20px}
 
+/* ---- status bar of Claude Code at the bottom of the page */
+body.lc-has-sbar .lc-toast{bottom:52px}
+.lc-sbar{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;flex-wrap:wrap;align-items:center;row-gap:2px;padding:4px 8px;background:var(--lc-card);border-top:1px solid var(--lc-line);box-shadow:0 -4px 16px rgba(0,0,0,.06);font-size:12px;line-height:20px;color:var(--lc-muted);font-variant-numeric:tabular-nums}
+.lc-sbar[hidden]{display:none}
+.lc-sb-item{display:inline-flex;align-items:center;gap:6px;padding:0 10px;white-space:nowrap}
+.lc-sb-item+.lc-sb-item{border-left:1px solid var(--lc-line)}
+/* An item with "fill": takes the free space of the line and is cut first. */
+.lc-sbar .lc-sb-fill{display:block;flex:1 1 0;min-width:90px;border-left:0;overflow:hidden;text-overflow:ellipsis;text-align:right}
+.lc-sb-fill>*+*{margin-left:6px}
+.lc-sb-chip{padding:0 7px;border-radius:10px;background:color-mix(in srgb,currentColor 14%,transparent);font-size:11px;font-weight:600;line-height:18px}
+.lc-sb-meterbox{display:inline-flex;align-items:center;gap:6px}
+.lc-sb-meter{position:relative;display:inline-block;width:56px;height:6px;border-radius:3px;background:var(--lc-line);overflow:hidden}
+.lc-sb-meter>span{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:currentColor}
+.lc-sb-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor}
+.lc-sbar .lc-sb-strong{color:var(--lc-text);font-weight:600}
+.lc-sbar .lc-sb-mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+.lc-sbar .lc-sb-good{color:var(--lc-good)}
+.lc-sbar .lc-sb-warn{color:var(--lc-warn)}
+.lc-sbar .lc-sb-bad{color:var(--lc-bad)}
+.lc-sbar .lc-sb-accent{color:var(--lc-accent)}
+.lc-sbar .lc-sb-muted{color:var(--lc-muted)}
+
 /* ---- change review */
 #lc-app.lc-wide{max-width:none}
 .lc-dtable,.lc-dpath,.lc-dquote,.lc-dinfo{font-family:ui-monospace,Menlo,Consolas,monospace}

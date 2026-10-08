@@ -68,6 +68,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import statusfeed
+
 HERE = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "live-comments/sessions"
 SERVER_LOG = DATA.parent / "server.log"
@@ -76,7 +78,7 @@ KEPT_AUTO_APPLY = DATA / "auto-apply"
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 11
+VERSION = 12
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -149,6 +151,9 @@ class Store:
         self.working = {}
         # Sessions closed by leave while the server lives.
         self.deleted = set()
+        # The status bar of each session's pages from statusfeed; lives while
+        # the server lives.
+        self.status = {}
         DATA.mkdir(parents=True, exist_ok=True)
         for f in DATA.glob("*.json"):
             s = json.loads(f.read_text(encoding="utf-8"))
@@ -162,6 +167,7 @@ class Store:
         file in KEPT_AUTO_APPLY: the next open of the session takes it."""
         s = self.sessions.pop(sid, None)
         self.working.pop(sid, None)
+        self.status.pop(sid, None)
         self.deleted.add(sid)
         if s:
             self.save(s)
@@ -206,7 +212,7 @@ class Store:
         w = self.working.get(sid)
         return {**s, "applied": len(s.get("applied") or []), "queue": [p["tid"] for p in self.queue(s)],
                 "working": {"tid": w["tid"], "resolve": w["resolve"]} if w else None,
-                "listening": self.listening.get(sid, 0) > 0, "now": now()}
+                "listening": self.listening.get(sid, 0) > 0, "status": self.status.get(sid), "now": now()}
 
     def request_parent_resolve(self, s, t):
         """Requests the decision of topic t's parent if all of the parent's
@@ -533,7 +539,7 @@ def index_page(store):
             f'<ul class="lc-sessions">{"".join(rows) or "<li>No sessions.</li>"}</ul></main></body></html>')
 
 
-def make_handler(store):
+def make_handler(store, feed):
     hosts = {f"{HOST}:{PORT}", f"localhost:{PORT}"}
 
     class Handler(BaseHTTPRequestHandler):
@@ -643,7 +649,13 @@ def make_handler(store):
                     self.send_json(store.public(s))
                 elif what == "wait":
                     rev = int(q.get("rev", ["-1"])[0])
+                    # A discussion page with the status bar: its bar is kept current while it polls.
+                    bar = "bar" in q
+                    if bar:
+                        feed.page_seen(sid)
                     store.cond.wait_for(lambda: s["rev"] != rev or sid not in store.sessions, timeout=25)
+                    if bar:
+                        feed.page_seen(sid)
                     if sid in store.sessions:
                         self.send_json(store.public(s))
                     else:
@@ -779,6 +791,8 @@ def make_handler(store):
                     self.apply_session(parts[2])
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "auto-apply":
                     self.auto_apply_session(parts[2], data)
+                elif len(parts) == 3 and parts[0] == "api" and parts[2] == "statusline":
+                    self.set_statusline(parts[1], data)
                 elif len(parts) >= 3 and parts[0] == "api" and parts[2] == "topics":
                     s = store.sessions.get(parts[1])
                     if not s:
@@ -859,6 +873,20 @@ def make_handler(store):
             store.save(s)
             self.send_json({"autoApply": s["autoApply"], "applied": applied,
                             "listening": store.listening.get(sid, 0) > 0})
+
+        def set_statusline(self, sid, data):
+            """Custom data of the session's status bar: a JSON object of at most
+            64 KB — for example the Claude Code status line JSON, or fields of
+            one's own. statusfeed adds its fields to the input of the bar file
+            where the server computes no such field."""
+            if not store.sessions.get(sid):
+                self.fail(*store.missing(sid))
+                return
+            if not isinstance(data, dict) or len(json.dumps(data, ensure_ascii=False).encode("utf-8")) > 65536:
+                self.fail("the status line JSON is an object of at most 64 KB", 400)
+                return
+            feed.statusline(sid, data)
+            self.send_json({"ok": True})
 
         def add_topic(self, s, data):
             """A new top-level topic from the user ({text, anchor}) or topics
@@ -1056,17 +1084,36 @@ def info():
         return None
 
 
+def session_ids(store):
+    with store.cond:
+        return list(store.sessions)
+
+
+def publish_bar(store, sid, bar):
+    """Hands the status bar bar of session sid to its pages: keeps it in
+    memory with the time it came, not in the session file, and wakes the pages."""
+    with store.cond:
+        s = store.sessions.get(sid)
+        if not s:
+            return
+        store.status[sid] = {**bar, "updated": now()}
+        s["rev"] += 1
+        store.cond.notify_all()
+
+
 def cmd_serve(_):
     if info():
         print(f"already running: {ORIGIN}/")
         return 0
     store = Store()
+    feed = statusfeed.Feed(lambda: session_ids(store), lambda sid, bar: publish_bar(store, sid, bar))
     try:
-        httpd = ThreadingHTTPServer((HOST, PORT), make_handler(store))
+        httpd = ThreadingHTTPServer((HOST, PORT), make_handler(store, feed))
     except OSError as e:
         print(f"port {PORT} is busy: {e}")
         return 1
     httpd.daemon_threads = True
+    feed.start()
     print(f"{ORIGIN}/  storage: {DATA}", flush=True)
     httpd.serve_forever()
     return 0

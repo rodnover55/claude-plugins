@@ -43,6 +43,9 @@
   var focusKey = takeFocusKey();
   // Whether the menu of the "Apply resolved" button is open.
   var applyMenu = false;
+  // The session page has had a state without questions where it is the
+  // user's turn: the first such question that appears opens by itself.
+  var autoOpen = false;
 
   function loadJson(key, dflt) {
     try {
@@ -725,6 +728,23 @@
     return TOPIC ? "/" + SID : null;
   }
 
+  // On the session page, after a state without questions where it is the
+  // user's turn, opens the first such question as soon as it appears: Claude
+  // has replied. While the user types in a field, the switch waits for a
+  // rendering with the field empty. True if the page is being left.
+  function openNextReply() {
+    if (TOPIC || diff || gone) return false;
+    var next = nextUnanswered(null);
+    if (!next) {
+      autoOpen = true;
+      return false;
+    }
+    var a = document.activeElement;
+    if (!autoOpen || a && a.tagName === "TEXTAREA" && app.contains(a) && a.value.trim()) return false;
+    location.href = "/" + SID + "/" + next.id;
+    return true;
+  }
+
   // The topic page button leading to nextHref: "Next unanswered (N)", where
   // N is how many such questions there are besides the open one, and if
   // there are none — "Home". Key — Alt+N.
@@ -757,6 +777,102 @@
     art.appendChild(h);
     art.appendChild(bodyEl(t));
     return art;
+  }
+
+  // ---- status bar
+
+  // The status bar at the bottom of the page: items of standard blocks from
+  // the user's file statusbar.py (protocol.md of the statusbar skill), which
+  // live-comments-line.py sends on every update of the Claude Code status
+  // line. It is outside app, so its updates do not re-render the page.
+  var sbarEl = null;
+  var SB_STYLES = { good: 1, warn: 1, bad: 1, accent: 1, muted: 1, strong: 1, mono: 1 };
+
+  // A duration of ms milliseconds in short: "3d 4h", "2h 13m", "42m", "<1m".
+  function span(ms) {
+    var m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    if (d) return d + "d " + h % 24 + "h";
+    if (h) return h + "h " + m % 60 + "m";
+    return m > 0 ? m + "m" : "<1m";
+  }
+
+  // The classes of the style names of a block, "good mono" → "lc-sb-good
+  // lc-sb-mono"; without style — of dflt. Unknown names are left out.
+  function sbStyle(style, dflt) {
+    return String(style || dflt || "").split(/\s+/).filter(function (n) { return SB_STYLES[n] === 1; })
+      .map(function (n) { return "lc-sb-" + n; }).join(" ");
+  }
+
+  // The element of block b; null for an unknown or empty block. now — the
+  // current time, updated — when the bar came, in ms.
+  function sbBlock(b, now, updated) {
+    if (!b || typeof b !== "object") return null;
+    if (typeof b.text === "string") return make("span", sbStyle(b.style), b.text);
+    if (typeof b.chip === "string") return make("span", "lc-sb-chip " + sbStyle(b.style, "accent"), b.chip);
+    if (typeof b.meter === "number") {
+      var warn = typeof b.warn === "number" ? b.warn : 70, bad = typeof b.bad === "number" ? b.bad : 90;
+      var lvl = "lc-sb-" + (b.meter >= bad ? "bad" : b.meter >= warn ? "warn" : "good");
+      var box = make("span", "lc-sb-meterbox");
+      var meter = make("span", "lc-sb-meter " + lvl), fill = make("span");
+      fill.style.width = Math.max(0, Math.min(100, b.meter)) + "%";
+      meter.appendChild(fill);
+      box.appendChild(meter);
+      box.appendChild(make("span", "lc-sb-strong " + lvl, Math.round(b.meter) + "%"));
+      return box;
+    }
+    if (typeof b.dot === "string") return make("span", "lc-sb-dot " + sbStyle(b.dot, "muted"));
+    if (typeof b.link === "string") {
+      if (!/^https?:\/\//.test(b.href || "")) return make("span", sbStyle(b.style), b.link);
+      var a = make("a", sbStyle(b.style), b.link);
+      a.href = b.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      return a;
+    }
+    if (typeof b.countdown === "number") {
+      var left = b.countdown * 1000 - now;
+      var text = left > 0 ? (b.prefix || "") + span(left) : b.done || "";
+      return text ? make("span", sbStyle(b.style, "muted"), text) : null;
+    }
+    if (b.age === true && updated) return make("span", sbStyle(b.style, "muted"), (b.prefix || "") + span(now - updated) + " ago");
+    return null;
+  }
+
+  // Draws the status bar from st.status; without items, or when the
+  // discussion is closed, hides the bar. Countdowns are counted from now.
+  function renderStatus() {
+    var s = st && !gone ? st.status : null;
+    var items = s && Array.isArray(s.items) ? s.items : [];
+    document.body.classList.toggle("lc-has-sbar", items.length > 0);
+    if (!items.length) {
+      if (sbarEl) sbarEl.hidden = true;
+      return;
+    }
+    if (!sbarEl) {
+      sbarEl = make("footer", "lc-sbar");
+      document.body.appendChild(sbarEl);
+    }
+    sbarEl.hidden = false;
+    sbarEl.textContent = "";
+    var now = Date.now(), updated = Date.parse(s.updated) || 0;
+    items.forEach(function (item) {
+      if (!item || !Array.isArray(item.blocks)) return;
+      var el = make("span", "lc-sb-item" + (item.fill === true ? " lc-sb-fill" : ""));
+      if (typeof item.title === "string" && item.title) el.title = item.title;
+      item.blocks.forEach(function (b) {
+        var e = sbBlock(b, now, updated);
+        if (e) el.appendChild(e);
+      });
+      // An empty fill item still pushes the next items to the right.
+      if (el.firstChild || item.fill === true) sbarEl.appendChild(el);
+    });
+  }
+
+  // Whether states a and b differ only in the status bar and in the server
+  // time: then the page itself is not re-rendered.
+  function onlyStatus(a, b) {
+    function core(x) { return JSON.stringify(Object.assign({}, x, { rev: 0, now: 0, status: 0 })); }
+    return core(a) === core(b);
   }
 
   // ---- rendering
@@ -849,6 +965,7 @@
       return;
     }
     deferred = false;
+    if (openNextReply()) return;
     var snap = snapshot();
     app.textContent = "";
     app.appendChild(headerEl());
@@ -858,6 +975,7 @@
     updateTitle();
     if (diff) diff.after();
     focusDraft();
+    renderStatus();
   }
 
   function applyState(next) {
@@ -885,6 +1003,7 @@
 
   function showGone(text) {
     gone = true;
+    renderStatus();
     app.textContent = "";
     app.appendChild(make("p", "lc-hint", typeof text === "string" ? text :
       "The discussion is closed: the session is disconnected, the questions are deleted."));
@@ -893,7 +1012,7 @@
 
   function poll() {
     if (gone) return;
-    fetch(API + "/wait?rev=" + rev, { cache: "no-store" })
+    fetch(API + "/wait?bar=1&rev=" + rev, { cache: "no-store" })
       .then(function (r) {
         if (r.status === 410) return null;
         if (r.status === 404) throw new Error("no such session");
@@ -907,7 +1026,11 @@
         }
         var was = online;
         online = true;
-        if (next.rev !== rev) applyState(next);
+        if (next.rev !== rev && was && st && onlyStatus(st, next)) {
+          st = next;
+          rev = next.rev;
+          renderStatus();
+        } else if (next.rev !== rev) applyState(next);
         else if (!was) render();
         setTimeout(poll, 30);
       }, function (e) {
@@ -1170,4 +1293,6 @@
   }
   app.appendChild(make("p", "lc-hint", "Loading…"));
   poll();
+  // Times until resets in the status bar go down without new data.
+  setInterval(renderStatus, 30000);
 })();

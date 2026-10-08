@@ -1,6 +1,6 @@
 ---
 name: live-comments
-description: "Live discussion page of a Claude Code session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; confirmations that need no discussion are carried out at once instead of becoming topics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions asked in chat become topics instead of chat answers. While topics are open, nothing but confirmations is changed: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start a discussion page, or invokes /live-comments."
+description: "Live discussion page of a Claude Code session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions asked in chat become topics instead of chat answers. While the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start a discussion page, or invokes /live-comments."
 argument-hint: "[path to .html]"
 allowed-tools:
   - Bash(python3 ${CLAUDE_SKILL_DIR}/cm.py *)
@@ -15,6 +15,7 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
   - Each topic is one row: the question and its state. The discussion is not in the tree.
   - By default the tree is collapsed to top-level questions; an arrow expands the rows of subquestions. The page remembers expanded branches in the browser and shows them the same after a reload and after returning from a question page. A closed topic collapses, even if it closed while the page was closed.
   - Resolved and declined topics stand below open ones at every level of the tree.
+  - When no question is the user's turn (as for “Next unanswered”), the first one that becomes the user's turn — Claude has replied — opens by itself. The page waits if it opened with such questions already there, and while the user types in the “New question” field: then the question opens after the text is sent.
   - The “Changes ↗” link in the header is always there and opens the changes page in a new tab.
   - The “Apply resolved” button is available when at least one question is resolved. It hands Claude, through the output of `wait`, the plan of resolved questions and removes resolved and declined questions from the list; open ones stay (see “Applying”).
   - The “▾” arrow next to the button opens a menu. “Apply when all questions are resolved” turns on auto-apply: the resolved ones are applied by themselves as soon as no open questions are left. While auto-apply waits, the button has the badge “applies by itself” with the number of open questions, and the menu has “Cancel auto-apply”. Auto-apply stays on until cancelled: after firing, it waits for the next questions, and after `leave` it carries over to the session's next discussion.
@@ -41,6 +42,7 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 - **Buttons of an open topic**: “Reply”, “Resolve” (asks Claude to record the decision) and “Decline”. Resolve is unavailable while the topic has open subquestions. A declined topic is final: no one can reply in it, and the question can be returned to only with a new topic. A resolved topic is opened again with the “Reopen” button (see “Reopening”).
 - **Drafts**: the text in the “New question” field, in a topic's reply field and in a question on lines is saved in the browser right away as a draft shared by the session's tabs. The user can leave a page without losing anything: the text returns to the field when the page opens again; a question on lines also gets its lines back. Sending, and “Cancel” of a question on lines, delete the draft. In the tree, a topic with a reply draft has the “draft” badge.
   - The “Drafts (N)” button in the header and the Alt+X key (in any keyboard layout), including from the reply field, open the page of the next draft in the order they were created, after the last one — the first; the cursor goes to the end of the text. N is how many drafts there are on other pages; without them there is no button.
+- **Status bar**: at the bottom of every discussion page, a bar built by the user's own file of the `statusbar` skill (`/live-comments:statusbar`) — by default the model, context window, rate limits, prompt cache, changed lines and repository. The server builds it once a minute while a page is open, from the session transcript, which has no cost; custom data, such as the status line JSON of Claude Code with the cost, can be sent to `POST /api/<session id>/statusline`. Requests to change the bar go to the `statusbar` skill.
 - **Keyboard help**: the “?” key on any discussion page, except while typing in a field, opens a window with the keys of this page; “?”, Esc or a click outside the window closes it.
 - **Storage** — `~/.local/share/live-comments/sessions/<session id>.json` (`$XDG_DATA_HOME/live-comments/sessions/` when `XDG_DATA_HOME` is set).
 
@@ -61,18 +63,17 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 
 ## Decisions only
 
-While the session has open topics, the discussion collects decisions. Code, project files and the HTML page are changed only by the user's confirmations (see “Confirmations”); change nothing else — neither on your own initiative nor at the user's request in a topic or in the chat. Besides that, the discussion itself (the `CM` commands), the script line in the HTML page (`CM embed`) and the decisions file in memory change.
-- A request to change something where one has to choose how exactly is a question: in a topic, answer that the change will be made after the discussion and include it in the topic's decision; from the chat, move it into the discussion (see “Question in the chat”).
+While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved” and by auto-apply, whether topics are open or not: not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page (`CM embed`) and the decisions file in memory change.
+- A request to change something is not carried out: in a topic, answer that the change will be made by “Apply resolved” and include it in the topic's decision; from the chat, move it into the discussion (see “Question in the chat”).
 - Reading code and files, gathering information and running checks is allowed: they change nothing.
 
-The exception is the plan of the “Apply resolved” button: carry it out right away, even if there are open topics (see “Applying”). When no open topics are left, changes are made as usual, at the user's request.
+Carry out the plan of “Apply resolved” right away, even if there are open topics (see “Applying”).
 
 ## Confirmations
 
-A confirmation is an item of a user message that says what to do, leaves no choice and does not resolve the question of the topic it is written in: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). A question, a request to explain, an objection and an instruction where one has to choose how exactly to do it are not confirmations. Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
-1. Confirmations do not become topics and do not count among the questions of the message.
-2. Carry them out right away, before answering the questions of the same message.
-3. Report what was done. In a topic — as a reply to the message (`CM reply`), and if the questions of the message have already been moved into subquestions — as an addition (`CM reply --followup`). From the chat — in the chat, together with the links to the topics.
+Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
+1. An instruction in a topic is not carried out: it goes into the topic's decision. Reply that it will be done by “Apply resolved” and how it enters the decision; if the questions of the message have already been moved into subquestions, reply as an addition (`CM reply --followup`). An instruction does not count among the questions of the message.
+2. An instruction from the chat becomes a top-level topic, like a question (see “Question in the chat”).
 
 ## Answering a topic
 
@@ -86,11 +87,11 @@ The output is one topic:
 
 Messages that need an answer are marked `← AWAITING REPLY`. The mark “new” in the first line means the topic has only the user's first message so far. Topics are given out in turn: first the one whose unanswered item came earlier.
 
-1. **One topic — one question.** First count the questions in the unanswered message. A question is each item that needs its own answer or its own decision: a question, a clarification, a request to explain in more detail, a request to change something where one has to choose how exactly, an objection. Confirmations are not questions (see “Confirmations”). Numbered items and paragraphs about different things are different questions. A clarification of the topic's answer or question counts like any other question. A questions file is a JSON list `[{"title": "<question in one line>", "text": "<the user's words about this question>"}]`.
+1. **One topic — one question.** First count the questions in the unanswered message. A question is each item that needs its own answer or its own decision: a question, a clarification, a request to explain in more detail, a request to change something where one has to choose how exactly, an objection. Instructions are not questions (see “Confirmations”). Numbered items and paragraphs about different things are different questions. A clarification of the topic's answer or question counts like any other question. A questions file is a JSON list `[{"title": "<question in one line>", "text": "<the user's words about this question>"}]`.
    - **A message with two or more questions** — the first message of a new topic or a message in the discussion — move it entirely into subquestions of this topic, one per question: `CM branch <id> -f <file> --message <message id>`. The message counts as answered; the subquestions will come through `wait`. For a new topic add `--title "<the message's overall question in one line>"`.
    - **Splitting always makes subquestions.** Questions from a message in a topic's thread become its subquestions and are not moved to top-level topics or topics of the same level. Only questions from the chat become top-level topics (see “Question in the chat”).
    - **A message with one question** — answer it in the topic.
-   - **A message without questions**, only with confirmations — carry them out and reply in the topic with what was done.
+   - **A message without questions**, only with instructions — reply that they go into the topic's decision and will be carried out by “Apply resolved” (see “Confirmations”).
    - **Your answer raised several questions** that the user decides — open them as subquestions without `--message`: `CM branch <id> -f <file>`. Such subquestions wait for the user's reply.
 2. **Find the answer** the same way as for a question in the chat: read the needed code, files and page. Follow the user's rules for answers (CLAUDE.md, memory): language, style, scope. Answer with words only: change nothing (see “Decisions only”).
 3. **Send the answer:** write it to a temporary file and run `CM reply <id> -f <file> --title "<question in one line>"`.
@@ -108,11 +109,10 @@ Messages that need an answer are marked `← AWAITING REPLY`. The mark “new”
 ## Question in the chat
 
 While the session is connected (after `open` and until `leave` or deletion of the discussion), do not answer the user's question in the chat: move the questions into the discussion as top-level topics, one per question. Do not open a topic that only groups the questions of a message.
-1. Each item of the message is a separate new question: five items — five top-level topics. Count the questions by the “One topic — one question” rule and write a questions file; `text` is the user's words about this question.
-2. Carry out the confirmations from the message right away (see “Confirmations”).
-3. Run `CM chat -f <file>`. The command opens top-level topics on behalf of the user and prints a link to each.
-4. In the chat reply briefly: what was done for the confirmations, and the links to the topics.
-5. The background `wait` will give these topics; answer them according to the rules of “Answering a topic”.
+1. Each item of the message is a separate new question: five items — five top-level topics. Count the questions by the “One topic — one question” rule; an instruction is a topic too (see “Confirmations”). Write a questions file; `text` is the user's words about this question.
+2. Run `CM chat -f <file>`. The command opens top-level topics on behalf of the user and prints a link to each.
+3. In the chat reply briefly with the links to the topics.
+4. The background `wait` will give these topics; answer them according to the rules of “Answering a topic”.
 
 Carry out requests about the discussion itself (write the script into a page, finish the discussion) in the chat as usual; the wait keeps running.
 
