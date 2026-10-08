@@ -843,7 +843,7 @@
   function renderStatus() {
     var s = st && !gone ? st.status : null;
     var items = s && Array.isArray(s.items) ? s.items : [];
-    document.body.classList.toggle("lc-has-sbar", items.length > 0);
+    document.documentElement.classList.toggle("lc-has-sbar", items.length > 0);
     if (!items.length) {
       if (sbarEl) sbarEl.hidden = true;
       return;
@@ -851,6 +851,11 @@
     if (!sbarEl) {
       sbarEl = make("footer", "lc-sbar");
       document.body.appendChild(sbarEl);
+      // The page keeps the bar's height free at its end and below the line
+      // being typed: the bar covers neither.
+      new ResizeObserver(function () {
+        document.documentElement.style.setProperty("--lc-sbar-h", sbarEl.offsetHeight + "px");
+      }).observe(sbarEl);
     }
     sbarEl.hidden = false;
     sbarEl.textContent = "";

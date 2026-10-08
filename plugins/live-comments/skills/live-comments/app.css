@@ -119,7 +119,10 @@ a:hover{text-decoration:underline}
 .lc-sessions{padding-left:20px}
 
 /* ---- status bar of Claude Code at the bottom of the page */
-body.lc-has-sbar .lc-toast{bottom:52px}
+/* --lc-sbar-h — the height of the bar: the end of the page and the line being typed stay above it. */
+html.lc-has-sbar{scroll-padding-bottom:var(--lc-sbar-h,29px)}
+html.lc-has-sbar body{padding-bottom:var(--lc-sbar-h,29px)}
+html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-sbar{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;flex-wrap:wrap;align-items:center;row-gap:2px;padding:4px 8px;background:var(--lc-card);border-top:1px solid var(--lc-line);box-shadow:0 -4px 16px rgba(0,0,0,.06);font-size:12px;line-height:20px;color:var(--lc-muted);font-variant-numeric:tabular-nums}
 .lc-sbar[hidden]{display:none}
 .lc-sb-item{display:inline-flex;align-items:center;gap:6px;padding:0 10px;white-space:nowrap}
