@@ -1,6 +1,6 @@
 ---
 name: live-comments
-description: "Live discussion page of a Claude Code session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions asked in chat become topics instead of chat answers. While the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start a discussion page, or invokes /live-comments."
+description: "Live discussion page of a Claude Code session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions and requests asked in chat become topics instead of chat answers; when no topics are open, a chat message with a single question or request is answered or carried out right away in chat. Otherwise, while the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start a discussion page, or invokes /live-comments."
 argument-hint: "[path to .html]"
 allowed-tools:
   - Bash(python3 ${CLAUDE_SKILL_DIR}/cm.py *)
@@ -63,17 +63,17 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 
 ## Decisions only
 
-While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved” and by auto-apply, whether topics are open or not: not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page (`CM embed`) and the decisions file in memory change.
-- A request to change something is not carried out: in a topic, answer that the change will be made by “Apply resolved” and include it in the topic's decision; from the chat, move it into the discussion (see “Question in the chat”).
+While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved”, by auto-apply and by a chat message with one item while no topics are open (see “Question in the chat”): not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page (`CM embed`) and the decisions file in memory change.
+- A request to change something is not carried out: in a topic, answer that the change will be made by “Apply resolved” and include it in the topic's decision; from the chat, move it into the discussion, unless it is the only item of the message and no topics are open (see “Question in the chat”).
 - Reading code and files, gathering information and running checks is allowed: they change nothing.
 
 Carry out the plan of “Apply resolved” right away, even if there are open topics (see “Applying”).
 
 ## Confirmations
 
-Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
+Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. The exception is a chat message with one item while no topics are open (see “Question in the chat”). An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
 1. An instruction in a topic is not carried out: it goes into the topic's decision. Reply that it will be done by “Apply resolved” and how it enters the decision; if the questions of the message have already been moved into subquestions, reply as an addition (`CM reply --followup`). An instruction does not count among the questions of the message.
-2. An instruction from the chat becomes a top-level topic, like a question (see “Question in the chat”).
+2. An instruction from the chat becomes a top-level topic, like a question; if it is the only item of the message and no topics are open, carry it out right away (see “Question in the chat”).
 
 ## Answering a topic
 
@@ -108,8 +108,13 @@ Messages that need an answer are marked `← AWAITING REPLY`. The mark “new”
 
 ## Question in the chat
 
-While the session is connected (after `open` and until `leave` or deletion of the discussion), do not answer the user's question in the chat: move the questions into the discussion as top-level topics, one per question. Do not open a topic that only groups the questions of a message.
-1. Each item of the message is a separate new question: five items — five top-level topics. Count the questions by the “One topic — one question” rule; an instruction is a topic too (see “Confirmations”). Write a questions file; `text` is the user's words about this question.
+While the session is connected (after `open` and until `leave` or deletion of the discussion), a message in the chat is answered in the chat or moved into the discussion. First count the items of the message by the “One topic — one question” rule; an instruction is an item too (see “Confirmations”). Then run `CM show`: a topic in the `[open]` state is open.
+- **There are open topics** — do not answer in the chat: move the items into the discussion, even a single one.
+- **There are no open topics, and the message has one item** — handle it in the chat right away, without a topic, as without the discussion: answer the question, carry out the instruction or the request to change something.
+- **There are no open topics, and the message has to be split:** it has two or more items — do not answer in the chat: move the items into the discussion.
+
+Move the items into the discussion as top-level topics, one per item. Do not open a topic that only groups the questions of a message.
+1. Each item of the message is a separate new question: five items — five top-level topics. Write a questions file; `text` is the user's words about this question.
 2. Run `CM chat -f <file>`. The command opens top-level topics on behalf of the user and prints a link to each.
 3. In the chat reply briefly with the links to the topics.
 4. The background `wait` will give these topics; answer them according to the rules of “Answering a topic”.
