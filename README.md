@@ -36,6 +36,8 @@ Run `/live-comments` (or `/live-comments:live-comments` if another command alrea
 
 Press `?` on any discussion page for keyboard shortcuts. Ask Claude to finish the discussion to get a summary of decisions and open questions.
 
+When the Claude Code session ends (exit or `/clear`), the plugin's `SessionEnd` hook disconnects it from the discussion: the topics stay on the server, and the server stops when no connected sessions are left. `/live-comments` in a resumed session with the same id connects it again with the same topics.
+
 ### Status line
 
 Run `/live-comments:statusline` to show the session's discussion in the Claude Code status line:

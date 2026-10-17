@@ -1,0 +1,16 @@
+{
+  "description": "Disconnects the session from its live-comments discussion when the Claude Code session ends; the discussion stays on the server",
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/live-comments/cm.py\" disconnect --hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

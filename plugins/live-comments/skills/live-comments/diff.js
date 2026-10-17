@@ -3,8 +3,9 @@
 
   // The session's change review page /<session id>/diff, as in VS Code: the
   // diffs of all files of a group — working tree changes or staged changes —
-  // one under another, versions side by side or inline. The file list slides
-  // in from the left over the diffs. A file can be collapsed and marked
+  // one under another, versions side by side or inline. The file list is a
+  // tree with a search field in a popup in the middle of the window, opened
+  // by a button or by Ctrl+P. A file can be collapsed and marked
   // viewed. A file, a change block or selected lines are staged and
   // unstaged, changes of a working tree file and block can be discarded; a
   // question can be asked about selected lines — it becomes a session topic,
@@ -56,7 +57,22 @@
     var reviewed = load(REVIEW_KEY, {});
     // A diff longer than this many lines is collapsed until expanded.
     var BIG = 500;
-    var drawerOpen = false;
+    // The file list popup: its window lies outside lc.app, so re-rendering
+    // the page keeps the search text and focus. listBox — the window with
+    // the dimmed backdrop, listHead, listInput, listTree — its header, search
+    // field and tree.
+    var listOpen = false;
+    var listBox = null, listHead = null, listInput = null, listTree = null;
+    // The rows of the tree from the last render (see treeRows) and the key of the chosen row.
+    var listRows = [];
+    var activeKey = null;
+    // Collapsed folders of the tree: folder key → true. They are remembered
+    // in the browser for the repository (dirsKey — the storage key, known
+    // once the changes are read), so all sessions on it share them. While
+    // searching, all folders are expanded, and folders collapsed then
+    // (closedFound) stay collapsed until the search text changes.
+    var closedDirs = {}, closedFound = {};
+    var dirsKey = null;
     // Whether the changes are being read and whether to re-read them right away.
     var busy = false;
     var again = false;
@@ -135,6 +151,10 @@
       var side = staged;
       return getJson(lc.API + "/git").then(function (next) {
         repo = next;
+        if (!dirsKey) {
+          dirsKey = "lc-closed-dirs:" + repo.repo;
+          closedDirs = load(dirsKey, {});
+        }
         return getJson(lc.API + "/git/diffs?staged=" + (side ? 1 : 0));
       }).then(function (d) {
         // The group could have been switched during the request: such a response is stale.
@@ -358,16 +378,94 @@
         iconBtn("+", "stage-file", "Stage file"));
     }
 
-    function listFileEl(f, g) {
-      var d = g.staged === staged ? fileOf(f.path) : null;
-      var row = make("div", "lc-file" + (g.staged === staged ? " lc-here" : ""));
-      row.setAttribute("data-act", "goto-file");
+    // Names in the tree are ordered as in VS Code: case-insensitive, numbers by value.
+    // One collator for all comparisons: localeCompare with options creates one per call.
+    var byName = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare;
+
+    // The files list of group side as rows of a tree, as in VS Code: in each
+    // folder its folders go first, then its files, both by name; a folder
+    // holding only one folder is one row "a/b". A row: kind — "dir" or
+    // "file", key — the folder key (keyOf of its path with "/" at the end)
+    // or the file key, up — the key of the folder the row is in, depth —
+    // its nesting level, side, name, open — whether the folder is expanded,
+    // f — the file of a file row. searching — the list is a search result:
+    // all folders are expanded except those collapsed during this search.
+    function treeRows(list, side, searching) {
+      var closed = searching ? closedFound : closedDirs;
+      var root = { dirs: {}, files: [] };
+      list.forEach(function (f) {
+        var parts = f.path.split("/"), node = root;
+        for (var i = 0; i < parts.length - 1; i++)
+          node = node.dirs[parts[i]] = node.dirs[parts[i]] ||
+            { name: parts[i], path: parts.slice(0, i + 1).join("/"), dirs: {}, files: [] };
+        node.files.push(f);
+      });
+      var rows = [];
+      (function walk(node, up, depth) {
+        Object.keys(node.dirs).sort(byName).forEach(function (k) {
+          var dir = node.dirs[k], name = dir.name, subs;
+          while (!dir.files.length && (subs = Object.keys(dir.dirs)).length === 1) {
+            dir = dir.dirs[subs[0]];
+            name += "/" + dir.name;
+          }
+          var key = keyOf(dir.path + "/", side);
+          var open = !closed[key];
+          rows.push({ kind: "dir", key: key, up: up, depth: depth, side: side, name: name, open: open });
+          if (open) walk(dir, key, depth + 1);
+        });
+        node.files.slice().sort(function (a, b) { return byName(a.path, b.path); }).forEach(function (f) {
+          rows.push({ kind: "file", key: keyOf(f.path, side), up: up, depth: depth, side: side,
+            name: f.path.slice(f.path.lastIndexOf("/") + 1), f: f });
+        });
+      })(root, null, 0);
+      return rows;
+    }
+
+    // A span of class cls with text s where the words of the search are
+    // highlighted; words — lowercase.
+    function marked(cls, s, words) {
+      var box = make("span", cls), low = s.toLowerCase(), hit = [];
+      words.forEach(function (w) {
+        for (var at = low.indexOf(w); at >= 0; at = low.indexOf(w, at + 1))
+          for (var k = at; k < at + w.length; k++) hit[k] = true;
+      });
+      for (var i = 0, j; i < s.length; i = j) {
+        for (j = i + 1; j < s.length && !hit[j] === !hit[i]; j++);
+        box.appendChild(hit[i] ? make("mark", "", s.slice(i, j)) : document.createTextNode(s.slice(i, j)));
+      }
+      return box;
+    }
+
+    // A tree row: indented by its nesting level, the chosen one is highlighted.
+    function rowEl(r, act) {
+      var row = make("div", "lc-file lc-tree-" + r.kind + (r.key === activeKey ? " lc-active" : ""));
+      row.setAttribute("data-act", act);
+      row.setAttribute("data-key", r.key);
+      row.style.paddingLeft = 10 + r.depth * 16 + "px";
+      return row;
+    }
+
+    // A folder row: the arrow and the name; a click collapses or expands it.
+    function dirEl(r, words) {
+      var row = rowEl(r, "tree-dir");
+      row.appendChild(make("span", "lc-tog", r.open ? "▾" : "▸"));
+      row.appendChild(marked("lc-fname", r.name, words));
+      return row;
+    }
+
+    // A file row: the name, the "viewed" mark, the number of open questions
+    // on the file, the file buttons and the status letter; a click goes to
+    // the file's diff.
+    function listFileEl(r, words) {
+      var f = r.f;
+      var d = r.side === staged ? fileOf(f.path) : null;
+      var row = rowEl(r, "goto-file");
+      if (r.side === staged) row.className += " lc-here";
       row.setAttribute("data-path", f.path);
-      row.setAttribute("data-staged", g.staged ? "1" : "0");
+      row.setAttribute("data-staged", r.side ? "1" : "0");
       row.title = f.path;
-      var cut = f.path.lastIndexOf("/");
-      row.appendChild(make("span", "lc-fname", f.path.slice(cut + 1)));
-      row.appendChild(make("span", "lc-fdir", cut > 0 ? f.path.slice(0, cut) : ""));
+      row.appendChild(make("span", "lc-tog"));
+      row.appendChild(marked("lc-fname", r.name, words));
       if (d && isReviewed(d)) row.appendChild(make("span", "lc-fseen", "✓"));
       var open = openTopics(f.path);
       if (open) {
@@ -375,36 +473,170 @@
         c.title = "Open questions on the file: " + open;
         row.appendChild(c);
       }
-      fileBtns(row, g.staged);
-      var l = letter(f, g.staged);
+      fileBtns(row, r.side);
+      var l = letter(f, r.side);
       row.appendChild(make("span", "lc-fst lc-fst-" + l, l));
       return row;
     }
 
-    // The file list of both groups sliding in from the left: lies over the diffs.
-    function drawerEl() {
-      var box = make("aside", "lc-drawer" + (drawerOpen ? " lc-open" : ""));
-      var head = make("div", "lc-scm-repo");
-      head.appendChild(make("span", "lc-scm-branch", "⎇ " + repo.branch));
-      head.appendChild(iconBtn("×", "drawer", "Hide the file list"));
-      box.appendChild(head);
-      groups().forEach(function (g) {
-        var gh = make("div", "lc-group");
-        gh.appendChild(make("span", "lc-group-title", g.title));
-        if (g.files.length) gh.appendChild(g.staged ? iconBtn("−", "unstage-all", "Unstage all changes") :
-          iconBtn("+", "stage-all", "Stage all changes"));
-        gh.appendChild(make("span", "lc-count", String(g.files.length)));
-        box.appendChild(gh);
-        g.files.forEach(function (f) { box.appendChild(listFileEl(f, g)); });
-        if (!g.files.length) box.appendChild(make("div", "lc-file lc-none", "No changes"));
-      });
-      return box;
+    function listWords() {
+      return listInput.value.toLowerCase().split(/\s+/).filter(Boolean);
     }
 
-    function setDrawer(open) {
-      drawerOpen = open;
-      var el = lc.app.querySelector(".lc-drawer");
-      if (el) el.classList.toggle("lc-open", open);
+    // Re-renders the file list popup: the files of both groups whose paths
+    // contain all words of the search, as trees. The chosen row stays chosen
+    // while it is in the list, otherwise the first file is chosen. reveal —
+    // scroll the list to the chosen row; otherwise the scroll position stays.
+    function renderList(reveal) {
+      listHead.textContent = "";
+      listHead.appendChild(make("span", "lc-scm-branch", repo ? "⎇ " + repo.branch : ""));
+      listHead.appendChild(iconBtn("×", "files", "Close the file list — Esc"));
+      var top = listTree.scrollTop;
+      listTree.textContent = "";
+      if (!repo) {
+        listTree.appendChild(make("p", "lc-hint", "Loading changes…"));
+        return;
+      }
+      var words = listWords();
+      var parts = groups().map(function (g) {
+        var found = g.files.filter(function (f) {
+          var p = f.path.toLowerCase();
+          return words.every(function (w) { return p.indexOf(w) >= 0; });
+        });
+        return { g: g, found: found, rows: treeRows(found, g.staged, words.length > 0) };
+      });
+      listRows = [].concat.apply([], parts.map(function (p) { return p.rows; }));
+      if (!listRows.some(function (r) { return r.key === activeKey; })) {
+        var first = listRows.find(function (r) { return r.kind === "file"; });
+        activeKey = first ? first.key : null;
+      }
+      parts.forEach(function (p) {
+        var gh = make("div", "lc-group");
+        gh.appendChild(make("span", "lc-group-title", p.g.title));
+        if (p.g.files.length) gh.appendChild(p.g.staged ? iconBtn("−", "unstage-all", "Unstage all changes") :
+          iconBtn("+", "stage-all", "Stage all changes"));
+        gh.appendChild(make("span", "lc-count", words.length ? p.found.length + " of " + p.g.files.length :
+          String(p.g.files.length)));
+        listTree.appendChild(gh);
+        p.rows.forEach(function (r) { listTree.appendChild(r.kind === "dir" ? dirEl(r, words) : listFileEl(r, words)); });
+        if (!p.found.length) listTree.appendChild(make("div", "lc-file lc-none", p.g.files.length ? "No matches" : "No changes"));
+      });
+      listTree.scrollTop = top;
+      var a = reveal && listTree.querySelector(".lc-active");
+      if (a) a.scrollIntoView({ block: "nearest" });
+    }
+
+    // The path of the file whose diff is at the top of the window, under the toolbar.
+    function fileInView() {
+      var secs = lc.app.querySelectorAll(".lc-dfile");
+      for (var i = 0; i < secs.length; i++)
+        if (secs[i].getBoundingClientRect().bottom > 52) return secs[i].getAttribute("data-path");
+      return null;
+    }
+
+    // The popup window of the file list. A press on the backdrop closes it,
+    // a click on a row keeps the focus in the search field.
+    function listEl() {
+      listBox = make("div", "lc-flist-wrap");
+      listBox.hidden = true;
+      var box = make("div", "lc-flist");
+      box.setAttribute("role", "dialog");
+      listHead = box.appendChild(make("div", "lc-scm-repo"));
+      listInput = box.appendChild(make("input", "lc-fsearch"));
+      listInput.type = "text";
+      listInput.placeholder = "Search files by path";
+      listInput.spellcheck = false;
+      listInput.autocomplete = "off";
+      listTree = box.appendChild(make("div", "lc-ftree"));
+      box.appendChild(make("div", "lc-hint lc-fkeys",
+        "↑↓ — choose · Enter — open the file or fold the folder · ←→ — fold and unfold folders · Esc — close"));
+      listBox.appendChild(box);
+      listBox.addEventListener("mousedown", function (e) {
+        if (e.target === listBox) setList(false);
+      });
+      listBox.addEventListener("click", function (e) {
+        var b = e.target.closest("[data-act]");
+        if (b) act(b.getAttribute("data-act"), b, e);
+        if (listOpen) listInput.focus();
+      });
+      listInput.addEventListener("input", function () {
+        closedFound = {};
+        activeKey = null;
+        renderList(true);
+      });
+      listInput.addEventListener("keydown", listKey);
+      document.body.appendChild(listBox);
+    }
+
+    // Opens the file list with an empty search, the file at the top of the
+    // window chosen, or closes it.
+    function setList(open) {
+      if (!listBox) listEl();
+      listOpen = open;
+      listBox.hidden = !open;
+      if (!open) {
+        listInput.blur();
+        return;
+      }
+      listInput.value = "";
+      closedFound = {};
+      var p = fileInView();
+      activeKey = p ? keyOf(p) : null;
+      renderList(true);
+      listInput.focus();
+    }
+
+    // Folds or unfolds the folder with key, choosing it; outside a search
+    // the folder's state is remembered.
+    function toggleDir(key) {
+      var closed = listWords().length ? closedFound : closedDirs;
+      if (closed[key]) delete closed[key];
+      else closed[key] = true;
+      if (closed === closedDirs && dirsKey) save(dirsKey, closedDirs);
+      activeKey = key;
+      renderList(true);
+    }
+
+    // Chooses the row with key: only the highlight moves, the list is not
+    // re-rendered, so moving is fast on a page with many lines of diffs.
+    function choose(key) {
+      activeKey = key;
+      var old = listTree.querySelector(".lc-active");
+      if (old) old.classList.remove("lc-active");
+      var row = listTree.querySelector('[data-key="' + CSS.escape(key) + '"]');
+      if (!row) return;
+      row.classList.add("lc-active");
+      row.scrollIntoView({ block: "nearest" });
+    }
+
+    function gotoFile(side, path) {
+      setList(false);
+      showSide(side, path);
+    }
+
+    // Keys of the search field: ↑↓ choose a row, Enter opens the chosen file
+    // or folds the chosen folder. With an empty field ← and → work as in a
+    // tree: → unfolds a folder and then goes to its first row, ← folds a
+    // folder and then goes to the folder the row is in.
+    function listKey(e) {
+      var i = -1;
+      listRows.forEach(function (r, k) { if (r.key === activeKey) i = k; });
+      var r = listRows[i];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        var n = listRows.length;
+        if (n) choose(listRows[i < 0 ? 0 : (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n].key);
+      } else if (e.key === "Enter" && r) {
+        e.preventDefault();
+        if (r.kind === "file") gotoFile(r.side, r.f.path);
+        else toggleDir(r.key);
+      } else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && r && !listInput.value) {
+        e.preventDefault();
+        var right = e.key === "ArrowRight";
+        if (r.kind === "dir" && r.open !== right) toggleDir(r.key);
+        else if (right && r.kind === "dir" && listRows[i + 1] && listRows[i + 1].up === r.key) choose(listRows[i + 1].key);
+        else if (!right && r.up) choose(r.up);
+      }
     }
 
     // ---- file diff
@@ -544,7 +776,7 @@
         body.appendChild(make("p", "lc-hint", d.binary ? "Binary file: lines are not shown." : "No line changes."));
         return body;
       }
-      var table = make("table", "lc-dtable lc-" + mode);
+      var table = make("table", "lc-dtable lc-dt-" + mode);
       table.setAttribute("data-path", d.path);
       var cols = make("colgroup");
       (mode === "inline" ? ["lc-c-ln", "lc-c-ln", "lc-c-mid", "lc-c-sign", "lc-c-code"] :
@@ -598,8 +830,8 @@
 
     function toolbarEl() {
       var tb = make("div", "lc-dtoolbar");
-      var fl = lc.button("☰ Files", "drawer", "lc-small");
-      fl.title = "File list of both groups";
+      var fl = lc.button("☰ Files", "files", "lc-small");
+      fl.title = "File list of both groups with search — Ctrl+P";
       tb.appendChild(fl);
       var seg = make("span", "lc-seg");
       groups().forEach(function (g) {
@@ -629,7 +861,6 @@
       if (error && !repo) return make("p", "lc-hint", "Could not read the changes: " + error);
       if (!repo) return make("p", "lc-hint", "Loading changes…");
       var wrap = make("div", "lc-diff");
-      wrap.appendChild(drawerEl());
       wrap.appendChild(toolbarEl());
       if (error) wrap.appendChild(make("p", "lc-hint lc-err", error));
       lays = {};
@@ -641,9 +872,11 @@
       return wrap;
     }
 
-    // After rendering: focus in the new question field, scrolling to the file
-    // or topic from the link, the position of the bar above selected lines.
+    // After rendering: the open file list with the new data, focus in the new
+    // question field, scrolling to the file or topic from the link, the
+    // position of the bar above selected lines.
     function after() {
+      if (listOpen) renderList(false);
       if (focusDraft) {
         var ta = lc.app.querySelector('textarea[data-key="diffnew"]');
         if (ta) {
@@ -709,12 +942,14 @@
       var d = path ? fileOf(path) : null;
       var blk = node.getAttribute("data-blk");
       switch (name) {
-        case "drawer":
-          setDrawer(!drawerOpen);
+        case "files":
+          setList(!listOpen);
           break;
         case "goto-file":
-          setDrawer(false);
-          showSide(node.getAttribute("data-staged") === "1", path);
+          gotoFile(node.getAttribute("data-staged") === "1", path);
+          break;
+        case "tree-dir":
+          toggleDir(node.getAttribute("data-key"));
           break;
         case "diff-side":
           showSide(node.getAttribute("data-side") === "1");
@@ -834,13 +1069,13 @@
       clearTimeout(selTimer);
       selTimer = setTimeout(showBar, 120);
     });
-    // The file list hides on a click outside it and on Esc.
-    document.addEventListener("mousedown", function (e) {
-      if (!drawerOpen || !e.target.closest || e.target.closest(".lc-drawer") || e.target.closest('[data-act="drawer"]')) return;
-      setDrawer(false);
-    });
+    // Ctrl+P (⌘P), as in VS Code, opens and closes the file list, by the
+    // physical key, so it works in any keyboard layout; Esc closes it.
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && drawerOpen) setDrawer(false);
+      if (e.code === "KeyP" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        setList(!listOpen);
+      } else if (e.key === "Escape" && listOpen) setList(false);
     });
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", function () {

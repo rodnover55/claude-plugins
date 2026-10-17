@@ -19,7 +19,8 @@ The default session is CLAUDE_CODE_SESSION_ID.
                                 HTML file
     cm.py wait                  wait for the first topic of the session where
                                 something awaits Claude, or for the "Apply
-                                resolved" plan, and print it
+                                resolved" plan, and print it; after the
+                                SessionEnd hook it does not end
     cm.py reply ID [-f FILE] [--title TEXT] [--followup] [--working]
                                 reply in a topic (Markdown from FILE or stdin);
                                 --title — the topic's question in one line;
@@ -38,8 +39,19 @@ The default session is CLAUDE_CODE_SESSION_ID.
                                 user's questions from the chat
     cm.py thread ID             the whole topic
     cm.py show                  short tree of the session's topics
+    cm.py activity [TEXT] [--topic ID]
+                                what Claude is doing now, in the header of the
+                                session's pages instead of "Claude is
+                                listening"; --topic — also above the reply
+                                field of topic ID; without TEXT — the default
+                                phrases
     cm.py leave                 close the session: delete its discussion and
                                 print it; the last one stops the server
+    cm.py disconnect [--hook]   disconnect the session and keep its discussion;
+                                the last one stops the server; --hook — the
+                                SessionEnd hook: the session from the hook JSON
+                                on stdin, quiet, never starts the server; the
+                                session's wait does not end
     cm.py serve                 the server in the current process (open starts
                                 it by itself)
     cm.py stop                  stop the server; wait commands restart it from
@@ -80,7 +92,7 @@ AUTO_APPLY_DEFAULT = DATA.parent / "auto-apply-default"
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 13
+VERSION = 18
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -150,7 +162,49 @@ def pending(t):
             "resolve": bool(req), "auto": bool(req and t.get("resolveAuto"))}
 
 
+def open_on_desktop(path):
+    """Opens path with the default application of the desktop: xdg-open, open
+    on macOS, the shell on Windows. Returns the error text or None."""
+    if os.name == "nt":
+        try:
+            os.startfile(path)
+        except OSError as e:
+            return str(e)
+        return None
+    cmd = ["open" if sys.platform == "darwin" else "xdg-open", path]
+    try:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             start_new_session=True)
+    except OSError as e:
+        return str(e)
+    try:
+        code = p.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        # The opener keeps running together with the application it started.
+        return None
+    if code:
+        return p.stderr.read().decode("utf-8", "replace").strip() or f"{cmd[0]} exited with code {code}"
+    return None
+
+
 # ---------------------------------------------------------------- storage
+
+def write_session(s):
+    """Increments the state number of session s and writes its file."""
+    s["rev"] += 1
+    path = DATA / (s["session"] + ".json")
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def read_session(sid):
+    """Returns session sid from its file, or None if there is no such file."""
+    try:
+        return json.loads((DATA / (sid + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
 
 class Store:
     """Sessions and their topics in the server's memory.
@@ -203,11 +257,7 @@ class Store:
 
     def save(self, s):
         """Increments the state number of session s, writes its file and wakes those waiting."""
-        s["rev"] += 1
-        path = DATA / (s["session"] + ".json")
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(path)
+        write_session(s)
         self.cond.notify_all()
 
     @staticmethod
@@ -684,7 +734,7 @@ def make_handler(store, feed):
             """Gives Claude the "Apply resolved" plan first, and without it the
             session's oldest task, and remembers it as the current work. The
             plan is given once. While the request is pending, the session is
-            "listening"."""
+            "listening"; disconnect of the session ends it."""
             sid = s["session"]
             if not s.get("connected"):
                 self.fail(f"session {sid} is not connected: cm.py open", 404)
@@ -695,11 +745,12 @@ def make_handler(store, feed):
             s["lastSeen"] = now()
             store.save(s)
             try:
-                store.cond.wait_for(lambda: sid not in store.sessions or bool(s.get("applied"))
-                                    or bool(store.queue(s)), timeout=timeout)
+                store.cond.wait_for(lambda: sid not in store.sessions or not s.get("connected")
+                                    or bool(s.get("applied")) or bool(store.queue(s)), timeout=timeout)
                 gone = sid not in store.sessions
-                batch = s["applied"].pop(0) if not gone and s.get("applied") else None
-                tasks = [] if gone or batch else store.queue(s)
+                off = not gone and not s.get("connected")
+                batch = s["applied"].pop(0) if not gone and not off and s.get("applied") else None
+                tasks = [] if gone or off or batch else store.queue(s)
                 task = tasks[0] if tasks else None
                 if task:
                     store.working[sid] = task
@@ -710,7 +761,9 @@ def make_handler(store, feed):
                 self.fail(*store.missing(sid))
                 return
             store.save(s)
-            if batch:
+            if off:
+                self.fail(f"session {sid} is not connected: cm.py open", 404)
+            elif batch:
                 self.send_json({"apply": batch, "label": s.get("label"), "topics": s["topics"]})
             elif task:
                 self.send_json({"task": task, "queue": len(tasks), "topics": s["topics"]})
@@ -797,17 +850,24 @@ def make_handler(store, feed):
             if len(parts) == 4 and parts[0] == "api" and parts[2] == "git" and parts[3] in ("stage", "unstage", "revert", "discard"):
                 self.git_post(parts[1], parts[3], data)
                 return
+            if len(parts) == 3 and parts[0] == "api" and parts[2] == "open":
+                self.open_file(parts[1], data)
+                return
             with store.cond:
                 if parts == ["api", "sessions"]:
                     self.open_session(data)
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "delete":
                     self.delete_session(parts[2])
+                elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "disconnect":
+                    self.disconnect_session(parts[2], data)
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "apply":
                     self.apply_session(parts[2])
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "auto-apply":
                     self.auto_apply_session(parts[2], data)
                 elif len(parts) == 3 and parts[0] == "api" and parts[2] == "statusline":
                     self.set_statusline(parts[1], data)
+                elif len(parts) == 3 and parts[0] == "api" and parts[2] == "activity":
+                    self.set_activity(parts[1], data)
                 elif len(parts) >= 3 and parts[0] == "api" and parts[2] == "topics":
                     s = store.sessions.get(parts[1])
                     if not s:
@@ -825,6 +885,30 @@ def make_handler(store, feed):
                         self.fail("no such request", 404)
                 else:
                     self.fail("no such request", 404)
+
+        def open_file(self, sid, data):
+            """A file:// link on a discussion page, {path}: the browser does not
+            open local files from the server's pages, so the server opens the
+            file with the default application of the desktop — an HTML page in
+            the browser, as file://. Only the server's own pages may ask: not
+            file:// pages and not sandboxed frames, whose Origin is null."""
+            if (self.headers.get("Origin") or "")[7:] not in hosts:
+                self.fail("files are opened only from the discussion pages", 403)
+                return
+            with store.cond:
+                missing = None if sid in store.sessions else store.missing(sid)
+            if missing:
+                self.fail(*missing)
+                return
+            path = str(data.get("path") or "")
+            if not os.path.isabs(path) or not os.path.exists(path):
+                self.fail(f"no file {path}", 404)
+                return
+            err = open_on_desktop(path)
+            if err:
+                self.fail(f"could not open {path}: {err}", 500)
+                return
+            self.send_json({"ok": True})
 
         def open_session(self, data):
             sid = data.get("session") or ""
@@ -844,7 +928,8 @@ def make_handler(store, feed):
                 s = store.sessions[sid] = {"session": sid, "created": now(), "rev": 0, "topics": [],
                                            "autoApply": now() if on else None}
                 kept.unlink(missing_ok=True)
-            s.update(label=data.get("label") or s.get("label") or sid[:8], connected=True, lastSeen=now())
+            s.update(label=data.get("label") or s.get("label") or sid[:8], connected=True, ended=False,
+                     lastSeen=now())
             # Only cm.py open sets the repository: pages in the browser send Origin.
             if self.headers.get("Origin") is None:
                 s["repo"] = data.get("repo")
@@ -858,6 +943,27 @@ def make_handler(store, feed):
                 self.fail(*store.missing(sid))
                 return
             store.delete(sid)
+            self.send_connected()
+
+        def disconnect_session(self, sid, data):
+            """The disconnect command, which the SessionEnd hook runs when the
+            Claude Code session ends: the session is no longer connected, and
+            its discussion stays on the server; open connects it again. From
+            the hook ({ended: true}) the session is marked ended: its wait
+            does not end (see sleep_till_killed). If no connected sessions are
+            left, stops the server."""
+            s = store.sessions.get(sid)
+            if not s:
+                self.fail(*store.missing(sid))
+                return
+            s["connected"] = False
+            s["ended"] = bool(data.get("ended"))
+            store.working.pop(sid, None)
+            store.save(s)
+            self.send_connected()
+
+        def send_connected(self):
+            """Answers with the number of connected sessions; if none are left, stops the server."""
             connected = sum(1 for x in store.sessions.values() if x.get("connected"))
             self.send_json({"connected": connected})
             if not connected:
@@ -908,6 +1014,25 @@ def make_handler(store, feed):
                 return
             feed.statusline(sid, data)
             self.send_json({"ok": True})
+
+        def set_activity(self, sid, data):
+            """The activity command: {text, topic} — what Claude is doing now,
+            one line of at most 200 characters, shown in the header of the
+            session's pages instead of "Claude is listening"; with topic — also
+            above the reply field of that topic. An empty text returns the
+            default phrases. Lives in the session until changed or leave."""
+            s = store.sessions.get(sid)
+            if not s:
+                self.fail(*store.missing(sid))
+                return
+            text = " ".join(str(data.get("text") or "").split())[:200]
+            tid = data.get("topic") or None
+            if text and tid and not store.topic(s, tid):
+                self.fail(f"no topic {tid}", 404)
+                return
+            s["activity"] = {"text": text, "since": now(), "topic": tid} if text else None
+            store.save(s)
+            self.send_json({"activity": s["activity"]})
 
         def add_topic(self, s, data):
             """A new top-level topic from the user ({text, anchor}) or topics
@@ -1374,6 +1499,17 @@ def cmd_embed(args):
     print(f"written: {tag.strip()}")
 
 
+def sleep_till_killed():
+    """The wait of a session ended by the SessionEnd hook. On /clear Claude
+    Code runs the hook and keeps background tasks in the new conversation, and
+    the end of a background task starts a turn there. So the wait does not end:
+    Claude Code kills it on exit; without its shell it ends by itself."""
+    shell = os.getppid()
+    while os.getppid() == shell:
+        time.sleep(30)
+    return 0
+
+
 def cmd_wait(args):
     session = need_session(args)
     failures = 0
@@ -1383,6 +1519,8 @@ def cmd_wait(args):
             failures = 0
         except urllib.error.HTTPError as e:
             report = closed_report(session) if e.code == 410 else None
+            if not report and (read_session(session) or {}).get("ended"):
+                return sleep_till_killed()
             print(report or json.loads(e.read()).get("error"))
             return 0 if report else 1
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
@@ -1394,7 +1532,14 @@ def cmd_wait(args):
                 return 0
             # The server is stopped or crashed while the session is not
             # closed: the wait starts it again, and the session keeps listening.
-            if (DATA / (session + ".json")).exists() and not info() and start_server():
+            # A disconnected session does not start it.
+            saved = read_session(session)
+            if saved and saved.get("ended"):
+                return sleep_till_killed()
+            if saved and not saved.get("connected"):
+                print(f"session {session} is not connected: cm.py open")
+                return 1
+            if saved and not info() and start_server():
                 continue
             failures += 1
             if failures > 24:
@@ -1474,6 +1619,9 @@ def cmd_thread(args):
 def cmd_show(args):
     st = session_topics(args)
     print(f"session {st['session']} “{st.get('label')}”" + (" — listening" if st.get("listening") else ""))
+    a = st.get("activity")
+    if a:
+        print(f"activity: {a['text']}" + (f" (topic {a['topic']})" if a.get("topic") else ""))
     print(f"page: {ORIGIN}/{st['session']}")
 
     def walk(parent, depth):
@@ -1486,11 +1634,45 @@ def cmd_show(args):
     walk(None, 0)
 
 
+def cmd_activity(args):
+    res = call("POST", f"/api/{need_session(args)}/activity", {"text": args.text, "topic": args.topic})
+    a = res["activity"]
+    print(f"activity: {a['text']}" + (f" (topic {a['topic']})" if a.get("topic") else "") if a
+          else "activity cleared: the pages show the default phrases")
+
+
 def cmd_leave(args):
     session = need_session(args)
     res = call("POST", f"/api/sessions/{session}/delete", {})
     print(closed_report(session) or f"session {session} deleted")
     print(f"\nconnected sessions: {res['connected']}" + ("; server stopped" if res["connected"] == 0 else ""))
+
+
+def cmd_disconnect(args):
+    if not args.hook:
+        session = need_session(args)
+        res = call("POST", f"/api/sessions/{session}/disconnect", {})
+        print(f"session {session} disconnected, the discussion stays: {ORIGIN}/{session}")
+        print(f"connected sessions: {res['connected']}" + ("; server stopped" if res["connected"] == 0 else ""))
+        return 0
+    # The SessionEnd hook: the end of a Claude Code session must not fail or
+    # start the server, so errors are ignored.
+    try:
+        session = str(json.load(sys.stdin).get("session_id") or "")
+    except (ValueError, AttributeError):
+        return 0
+    saved = read_session(session) if SAFE_ID.match(session) else None
+    if not saved or not saved.get("connected"):
+        return 0
+    if info():
+        try:
+            api("POST", f"/api/sessions/{session}/disconnect", {"ended": True}, timeout=5)
+        except Exception:
+            pass
+    else:
+        saved.update(connected=False, ended=True)
+        write_session(saved)
+    return 0
 
 
 def cmd_stop(_):
@@ -1530,11 +1712,15 @@ def main():
     cmd("resolve", "id").add_argument("--decision", required=True)
     cmd("ask").add_argument("-f", "--file", required=True)
     cmd("chat").add_argument("-f", "--file", required=True)
+    a = cmd("activity")
+    a.add_argument("text", nargs="?")
+    a.add_argument("--topic")
+    cmd("disconnect").add_argument("--hook", action="store_true")
     args = p.parse_args()
     handlers = {"serve": cmd_serve, "stop": cmd_stop, "open": cmd_open, "embed": cmd_embed, "wait": cmd_wait,
                 "leave": cmd_leave, "show": cmd_show, "thread": cmd_thread, "reply": cmd_reply,
                 "branch": cmd_branch, "resolve": cmd_resolve, "ask": cmd_ask,
-                "chat": cmd_chat}
+                "chat": cmd_chat, "activity": cmd_activity, "disconnect": cmd_disconnect}
     return handlers[args.cmd](args) or 0
 
 

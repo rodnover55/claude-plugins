@@ -10,7 +10,7 @@ allowed-tools:
 
 A **topic** is the discussion of one question. Topics form a tree: a question that comes up in the discussion of a topic becomes its **subquestion**, that is, a child topic.
 
-- **Server** `cm.py` is one for all sessions: `http://127.0.0.1:8765`. It runs separately from the session and outlives it.
+- **Server** `cm.py` is one for all sessions: `http://127.0.0.1:8765`. It runs separately from the session and outlives it; it stops when no connected sessions are left (see “End of the Claude Code session”).
 - **Session page** — `http://127.0.0.1:8765/<session id>`. It has nothing but the “New question” field, a forum-like tree of questions, and under it the “Plan of accepted decisions” block: the decisions of all resolved topics as numbered plan items, each with a “↗” link to its question; decisions of subquestions are subitems of their question's decision. A session is not deleted from the page: without questions the page is empty.
   - Each topic is one row: the question and its state. The discussion is not in the tree.
   - By default the tree is collapsed to top-level questions; an arrow expands the rows of subquestions. The page remembers expanded branches in the browser and shows them the same after a reload and after returning from a question page. A closed topic collapses, even if it closed while the page was closed.
@@ -27,7 +27,7 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
   - the discussion and the reply field; subquestions are shown as the same kind of tree in the “Subquestions” message that opened them.
 - **Changes page** — `http://127.0.0.1:8765/<session id>/diff`: a review of the changes of the git repository where `CM open` was run, as in VS Code.
   - The diffs of all files of a group go one under another. The groups are “Changes” (working tree against the index, together with untracked files) and “Staged Changes” (index against HEAD); the group switch is in the toolbar above the diffs. The view is there too: “Side by side” (the default) or “Inline”; the choice is remembered in the browser.
-  - The “☰ Files” button slides in, from the left over the diffs, the list of files of both groups; a click on a file scrolls to it.
+  - The “☰ Files” button and the Ctrl+P key open, in the middle of the window over the diffs, the list of files of both groups as a tree of folders with a search field. The search keeps the files whose paths contain all its words. ↑↓ choose a file or folder, Enter or a click goes to the file's diff or folds the folder, ← and → fold and unfold folders while the field is empty, Esc closes the list. Folded folders are remembered in the browser for the repository; while searching, all folders are unfolded.
   - A file in the list and in its diff header has: “+” or “−” — stage or unstage the whole file, “↶” — discard the file's changes in the working tree (a new file is deleted), after confirmation.
   - A file collapses on a click on its header. The “Viewed” mark collapses the file; if the file's diff changes later, the mark clears by itself. The marks are kept in the browser.
   - A change block is a run of changed lines. In the middle column next to a block: “+” (“−” in the staged diff) — stage or unstage the block, and “↶” — discard the block in the working tree after confirmation.
@@ -39,6 +39,7 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
   - From a selected fragment the script creates a session topic and highlights fragments that have topics.
   - A click on a highlight opens the topic on the server. If a fragment has several topics, a menu to choose from appears first.
 - **Claude's replies** appear on the pages without a reload. New replies are signalled by the “new” badge and a number in the tab title. A recorded decision, “Subquestion … resolved” and a list of subquestions do not count as new: they repeat what is already visible; a declined topic has no “new” marks. While Claude replies, while the question waits for Claude in the queue, or while Claude continues working on the question after a “taking this on” reply, a badge says so on the topic page right above the reply field and in the topic's row in the tree.
+- **Claude's activity**: the header of every discussion page says whether Claude is listening: “● Claude is listening” or “● Claude is not listening now — will answer on return”. Claude replaces this phrase with what it is doing now, and returns it; activity for a topic also stands above the topic's reply field instead of its state badge (see “Activity”).
 - **Buttons of an open topic**: “Reply”, “Resolve” (asks Claude to record the decision) and “Decline”. Resolve is unavailable while the topic has open subquestions. A declined topic is final: no one can reply in it, and the question can be returned to only with a new topic. A resolved topic is opened again with the “Reopen” button (see “Reopening”).
 - **Drafts**: the text in the “New question” field, in a topic's reply field and in a question on lines is saved in the browser right away as a draft shared by the session's tabs. The user can leave a page without losing anything: the text returns to the field when the page opens again; a question on lines also gets its lines back. Sending, and “Cancel” of a question on lines, delete the draft. In the tree, a topic with a reply draft has the “draft” badge.
   - The “Drafts (N)” button in the header and the Alt+X key (in any keyboard layout), including from the reply field, open the page of the next draft in the order they were created, after the last one — the first; the cursor goes to the end of the text. N is how many drafts there are on other pages; without them there is no button.
@@ -96,14 +97,22 @@ Messages that need an answer are marked `← AWAITING REPLY`. The mark “new”
 2. **Find the answer** the same way as for a question in the chat: read the needed code, files and page. Follow the user's rules for answers (CLAUDE.md, memory): language, style, scope. Answer with words only: change nothing (see “Decisions only”).
 3. **Send the answer:** write it to a temporary file and run `CM reply <id> -f <file> --title "<question in one line>"`.
    - `--title` is required if the output has the line “no title”. The title is the topic's question in one line; it is visible in the collapsed tree.
-   - The page understands Markdown: paragraphs, `- ` and `1. ` lists, `code`, **bold**, links `[text](https://…)`.
+   - **Markdown.** Write replies in Markdown wherever it makes them easier to read: the page shows the messages of the user and of Claude as Markdown, like GitHub comments. Headings, paragraphs (a line break stays a break), lists with nesting and tasks `- [ ]`, quotes `>`, code blocks in ```` ``` ````, tables, `code`, **bold**, *italic*, ~~strikethrough~~, links `[text](https://…)`, images and bare addresses all work. The same goes for decisions (`--decision`) and the `text` of questions files. The title (`--title`, `title`) is plain text. HTML in the text is shown as text.
+   - **Links.** Give a link wherever the reply refers to something the user may want to open, written as `[what opens](address)`. All links in messages and decisions open in a new tab; `file://` links open as described below.
+     - another topic of the discussion — `http://127.0.0.1:8765/<session id>/<topic id>`;
+     - a changed file on the changes page — `http://127.0.0.1:8765/<session id>/diff?f=<path from the repository root>`, with `&s=1` for the staged diff;
+     - a local file or folder — an HTML page, a report, a file you created or edited, also outside the repository — `file://<absolute path>`, for example `[page.html](file:///home/user/reports/page.html)`. Wherever the reply names such a file or its path, it is a link. The browser does not open local files from the discussion pages, so a click on such a link asks the server to open the file with the desktop's default application: an HTML page opens in the browser in a new tab;
+     - a file or lines of a commit that is already on GitHub — `https://github.com/<owner>/<repo>/blob/<commit>/<path>#L<from>-L<to>`;
+     - a commit, pull request, issue, documentation page or another source the answer relies on — its full `https://` address.
+
+     Give only addresses that exist: take them from the output of the `CM` commands, `git remote`, `git log` and the sources you read; do not make them up. The same goes for decisions and the `text` of questions files.
    - If `reply` answers “topic closed (declined)”, the user declined the question while you were working on it. Send and record nothing.
 4. Start `CM wait` in the background again right away.
 
 **Long work** (investigation, a live check) must not hold up the queue:
-1. Right away reply in the topic briefly that you have taken it on and what the result will be: `CM reply <id> -f <file> --working`. This way the question is answered and the queue moves on, while the `--working` flag keeps the topic in Claude's work: the page shows the badge “Claude is working on the question…”, and `show` shows “[IN PROGRESS]”.
+1. Right away reply in the topic briefly that you have taken it on and what the result will be: `CM reply <id> -f <file> --working`, and set the activity of the topic: `CM activity "<what you are doing>" --topic <id>` (see “Activity”). This way the question is answered and the queue moves on, while the `--working` flag keeps the topic in Claude's work: the page shows the badge “Claude is working on the question…”, and `show` shows “[IN PROGRESS]”.
 2. Start `wait` and answer other topics as they come.
-3. Append the result to the same topic: `CM reply <id> -f <file> --followup`. The `--followup` flag means the message adds to the previous answer rather than answering a new question. A reply without `--working` removes the work badge; send an intermediate addition after which the work continues with `--followup --working`.
+3. Append the result to the same topic: `CM reply <id> -f <file> --followup`. The `--followup` flag means the message adds to the previous answer rather than answering a new question. A reply without `--working` removes the work badge; send an intermediate addition after which the work continues with `--followup --working`. Update the activity as the work moves on; when the work is finished, return the default phrases: `CM activity`.
 4. If the user writes into the topic while it is in work (the first line of the `wait` output is marked “in progress by Claude”) and the work continues after the reply, reply with `--working` too.
 
 ## Question in the chat
@@ -174,8 +183,20 @@ Auto-apply applies the resolved ones the same way, by itself: when Claude record
 
 1. Start `CM wait` in the background again right away: the discussion continues.
 2. Print the whole plan to the chat as it is in the output.
-3. Carry out the plan item by item, even if there are open topics. Take the details for an item from its topic's discussion.
+3. Carry out the plan item by item, even if there are open topics. Take the details for an item from its topic's discussion. Keep the activity on the current item, for example “Carrying out the plan: item 2 of 5 — cache TTL”, and return the default phrase when the plan is done (see “Activity”).
 4. The decision of a parent whose subquestions are marked “applied” does not repeat them: they are already done.
+
+## Activity
+
+The phrase in the header of the session's pages describes what Claude is doing. By default it is “● Claude is listening” or “● Claude is not listening now — will answer on return”, depending on whether `wait` is running.
+- `CM activity "<what you are doing now>"` — all pages of the session show this text instead of the default phrase. The colour of the dot still shows whether Claude is listening; the tooltip shows the default phrase and since when the text has been there.
+- `CM activity "<what you are doing now>" --topic <id>` — the same, and the text also stands above the reply field of topic `<id>`, on its page and under the diff lines, instead of the topic's state badge (“Claude is working on the question…”, “Claude is replying…”). While a user message of the topic waits in the queue, the badge “awaiting reply” stays there instead.
+- `CM activity` without text — returns the default phrases everywhere.
+- `CM show` prints the current activity, if there is one.
+
+1. **When to set.** Set the activity for work that takes longer than one reply and that the user does not see on the pages otherwise: carrying out the plan of “Apply resolved”, long work on a topic (`--working`), a long task from the chat, a long check or test run. Work for one topic gets `--topic <id>`; work for the whole session, such as the plan, gets no topic. Answering a topic needs no activity: the topic's badge already says “Claude is replying…”.
+2. **What to write.** One short line, at most 200 characters, about the current step, in the language of your replies: “Running the tests”, “Carrying out the plan: item 3 of 7 — cache TTL”, “Investigating the slow start for topic “Startup time””. Update it as the work moves on.
+3. **When to return the default.** As soon as the work is finished, before going back to waiting only: `CM activity`. The text does not go away by itself, and a stale text misleads the user. `leave` removes it together with the discussion.
 
 ## Stopping
 
@@ -186,10 +207,16 @@ When the user asks to finish:
 
 A new `open` in the same session starts the discussion anew, without the old topics, but with the session's auto-apply, on or off. The decisions stay in the project's memory.
 
+## End of the Claude Code session
+
+When the Claude Code session ends — on exit or `/clear` — the plugin's `SessionEnd` hook runs `CM disconnect --hook`: the session is disconnected, and its discussion stays on the server with all topics. Its pages say that the session is not connected. A pending `wait` of the session does not end: after `/clear` Claude Code keeps background tasks in the new conversation, and the end of the wait would start a turn there; Claude Code kills it on exit. If no connected sessions are left, the server stops; the discussion stays in its file. `CM open` in a session with the same id connects it again with the same topics.
+
 ## Other commands
 
 - `CM chat -f <file>` — open top-level topics on behalf of the user (see “Question in the chat”).
 - `CM ask -f <file>` — open top-level topics on behalf of Claude: questions the user decides, for example items of a report for discussion. The file is the same JSON list of questions; `text` is the whole item, self-contained. Such topics wait for the user's reply.
+- `CM activity ["<text>"] [--topic <id>]` — what Claude is doing now, in the header of the session's pages and, with `--topic`, above the topic's reply field; without text — the default phrases (see “Activity”).
+- `CM disconnect` — disconnect the session and keep its discussion; the `SessionEnd` hook runs it with `--hook` (see “End of the Claude Code session”).
 - `CM thread <id>` — the whole topic.
 - `CM show` — a short tree of the session's topics, with “WAITING” marks.
 - `CM stop` — stop the server right away, for all sessions. The waits of connected sessions start it again from the current `cm.py`, so this is how the server is restarted with a new version.

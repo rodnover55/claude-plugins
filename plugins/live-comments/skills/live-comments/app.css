@@ -24,7 +24,7 @@ a:hover{text-decoration:underline}
 .lc-topic-head .lc-next{margin-left:auto}
 .lc-key{display:inline-block;margin-left:8px;padding:0 5px;border:1px solid var(--lc-line);border-radius:4px;font-size:11px;line-height:16px;color:var(--lc-muted)}
 .lc-sep{flex:none;color:var(--lc-muted)}
-.lc-status{font-size:13px;margin-left:auto;flex:none}
+.lc-status{font-size:13px;margin-left:auto;flex:none;max-width:50%}
 .lc-status.lc-on{color:var(--lc-good)}
 .lc-status.lc-off{color:var(--lc-bad)}
 .lc-hint{color:var(--lc-muted);font-size:14px}
@@ -90,11 +90,30 @@ a:hover{text-decoration:underline}
 .lc-revoked-mark{font-weight:400}
 .lc-msg.lc-branch{border-left:3px solid var(--lc-muted)}
 .lc-who{display:flex;gap:8px;align-items:center;font-size:12px;font-weight:700;color:var(--lc-muted);margin-bottom:4px}
-.lc-text{white-space:pre-wrap}
 .lc-md p{margin:0 0 6px}
 .lc-md p:last-child{margin-bottom:0}
 .lc-md ul,.lc-md ol{margin:0 0 6px;padding-left:20px}
+.lc-md li>ul,.lc-md li>ol{margin-bottom:0}
 .lc-md code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;background:var(--lc-accent-soft);padding:1px 4px;border-radius:4px}
+.lc-md h1,.lc-md h2,.lc-md h3,.lc-md h4,.lc-md h5,.lc-md h6{margin:10px 0 6px;font-size:15px;line-height:1.3}
+.lc-md h1{font-size:18px}
+.lc-md h2{font-size:16.5px}
+.lc-md h3{font-size:15.5px}
+.lc-md>:first-child{margin-top:0}
+.lc-md blockquote{margin:0 0 6px;padding:0 0 0 10px;border-left:3px solid var(--lc-line);color:var(--lc-muted)}
+.lc-md pre{margin:0 0 6px;padding:8px 10px;background:var(--lc-bg);border:1px solid var(--lc-line);border-radius:6px;overflow-x:auto;tab-size:4}
+.lc-md pre code{padding:0;background:none;border-radius:0}
+.lc-md hr{margin:8px 0;border:0;border-top:1px solid var(--lc-line)}
+.lc-md-table{margin:0 0 6px;overflow-x:auto}
+.lc-md table{border-collapse:collapse;font-size:14px}
+.lc-md th,.lc-md td{padding:3px 8px;border:1px solid var(--lc-line);text-align:left;vertical-align:top}
+.lc-md th{background:var(--lc-bg)}
+.lc-md img{max-width:100%}
+.lc-md del{color:var(--lc-muted)}
+.lc-md .lc-task{list-style:none}
+.lc-md .lc-task>input{margin:0 6px 0 -18px;vertical-align:-1px}
+.lc-md .lc-task>input+p{display:inline}
+.lc-md blockquote>:last-child,.lc-md li>:last-child,.lc-md>:last-child{margin-bottom:0}
 .lc-md.lc-inline,.lc-md.lc-inline p{display:inline}
 .lc-subdec{margin:6px 0 0;padding-left:20px}
 .lc-subdec li{margin:3px 0}
@@ -108,6 +127,7 @@ a:hover{text-decoration:underline}
 .lc-tree.lc-branch{margin-top:6px}
 .lc-replybox{margin-top:10px}
 .lc-claude-status{margin-top:10px}
+.lc-claude-status .lc-badge{display:inline-block;max-width:100%;white-space:normal;border-radius:10px}
 .lc-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1f2328;color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 .lc-toast[hidden]{display:none}
 .lc-keys-wrap{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35)}
@@ -146,20 +166,30 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 /* ---- change review */
 #lc-app.lc-wide{max-width:none}
 .lc-dtable,.lc-dpath,.lc-dquote,.lc-dinfo{font-family:ui-monospace,Menlo,Consolas,monospace}
-/* The file list slides in from the left over the diffs. */
-.lc-drawer{position:fixed;left:0;top:0;bottom:0;z-index:40;width:360px;max-width:90vw;overflow:auto;background:var(--lc-card);border-right:1px solid var(--lc-line);box-shadow:4px 0 24px rgba(0,0,0,.18);padding:6px 0 12px;font-size:13px;transform:translateX(-105%);transition:transform .18s ease}
-.lc-drawer.lc-open{transform:none}
-.lc-scm-repo{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:4px 10px 6px;color:var(--lc-muted);font-size:12px}
+/* The file list is a popup in the middle of the window over the diffs: the
+   search field above the tree of files, the key hint below. Its height is
+   fixed, so the window does not jump while searching; containment keeps its
+   re-rendering from re-laying out the long page of diffs. */
+.lc-flist-wrap{position:fixed;inset:0;z-index:40;contain:strict;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.35)}
+.lc-flist-wrap[hidden]{display:none}
+.lc-flist{display:flex;flex-direction:column;width:640px;max-width:92vw;height:600px;max-height:80vh;background:var(--lc-card);border:1px solid var(--lc-line);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);font-size:13px;overflow:hidden}
+.lc-fsearch{flex:none;margin:0 10px 4px;padding:6px 10px;font:inherit;font-size:14px;color:var(--lc-text);background:var(--lc-bg);border:1px solid var(--lc-line);border-radius:6px;outline:none}
+.lc-fsearch:focus{border-color:var(--lc-accent)}
+.lc-ftree{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding-bottom:8px}
+.lc-ftree>.lc-hint{padding:0 12px}
+.lc-fkeys{flex:none;padding:6px 12px;border-top:1px solid var(--lc-line);font-size:12px}
+.lc-scm-repo{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 10px 6px;color:var(--lc-muted);font-size:12px}
 .lc-scm-repo .lc-ibtn{visibility:visible;font-size:18px}
 .lc-group{display:flex;align-items:center;gap:6px;padding:8px 10px 3px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--lc-muted)}
 .lc-group-title{flex:1}
 .lc-count{flex:none;min-width:18px;padding:0 5px;border-radius:999px;background:var(--lc-line);color:var(--lc-text);text-align:center;font-size:11px;line-height:17px}
-.lc-file{display:flex;align-items:center;gap:6px;padding:2px 10px 2px 14px;cursor:pointer;white-space:nowrap;line-height:22px}
+.lc-file{display:flex;align-items:center;gap:4px;padding:2px 10px 2px 28px;cursor:pointer;white-space:nowrap;line-height:22px}
 .lc-file:hover{background:var(--lc-accent-soft)}
+.lc-file.lc-active{background:var(--lc-accent-soft);box-shadow:inset 2px 0 0 var(--lc-accent)}
 .lc-file.lc-none{cursor:default;color:var(--lc-muted);font-style:italic}
 .lc-file.lc-none:hover{background:none}
-.lc-fname{flex:none;max-width:55%;overflow:hidden;text-overflow:ellipsis}
-.lc-fdir{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--lc-muted);font-size:12px}
+.lc-fname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.lc-fname mark{background:none;color:var(--lc-accent);font-weight:700}
 .lc-fseen{flex:none;color:var(--lc-good);font-weight:700}
 .lc-fq{flex:none;padding:0 6px;border-radius:999px;background:var(--lc-warn);color:#fff;font-size:11px;font-weight:700;line-height:16px;font-family:system-ui,sans-serif}
 .lc-fst{flex:none;width:14px;text-align:center;font-weight:700;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
@@ -167,7 +197,7 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-fst-A,.lc-fst-U{color:var(--lc-good)}
 .lc-fst-D{color:var(--lc-bad)}
 .lc-ibtn{flex:none;width:22px;height:22px;border:0;border-radius:4px;background:transparent;color:var(--lc-muted);font:700 15px/22px system-ui,sans-serif;padding:0;cursor:pointer;visibility:hidden}
-.lc-file:hover .lc-ibtn,.lc-group:hover .lc-ibtn,.lc-dfile-acts .lc-ibtn{visibility:visible}
+.lc-file:hover .lc-ibtn,.lc-file.lc-active .lc-ibtn,.lc-group:hover .lc-ibtn,.lc-dfile-acts .lc-ibtn{visibility:visible}
 .lc-ibtn:hover{background:var(--lc-line);color:var(--lc-text)}
 /* The toolbar above the diffs and the file headers stay on top while scrolling. */
 .lc-dtoolbar{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;height:44px;margin:0 -18px;padding:0 18px;background:var(--lc-bg);border-bottom:1px solid var(--lc-line)}
@@ -209,7 +239,7 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-dtable td.lc-cfill{background:repeating-linear-gradient(-45deg,transparent 0 5px,rgba(127,127,127,.12) 5px 6px)}
 /* Middle column: change-block buttons, as in VS Code. */
 .lc-mid{text-align:center;white-space:nowrap;user-select:none;padding-top:1px!important}
-.lc-split .lc-mid{border-left:1px solid var(--lc-line);border-right:1px solid var(--lc-line);background:var(--lc-bg)}
+.lc-dt-split .lc-mid{border-left:1px solid var(--lc-line);border-right:1px solid var(--lc-line);background:var(--lc-bg)}
 .lc-blkbtn{width:18px;height:18px;margin:0 1px;padding:0;border:1px solid var(--lc-line);border-radius:4px;background:var(--lc-card);color:var(--lc-muted);font:700 13px/15px system-ui,sans-serif;cursor:pointer;opacity:.45}
 .lc-blk:hover .lc-blkbtn{opacity:1;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .lc-blkbtn.lc-stage-block{color:var(--lc-good)}
