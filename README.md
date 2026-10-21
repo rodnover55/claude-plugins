@@ -148,9 +148,12 @@ Your status line is outside the plugin: ask Claude to add the line to it if you 
 
 How the bar works inside is in [docs/statusbar.md](plugins/live-comments/docs/statusbar.md).
 
-### Fonts of the discussion pages
+### Fonts and theme of the discussion pages
 
-The pages use two fonts: the text font and the monospace font of code, the changes page, paths and the status bar values. Ask Claude to change them, for example “change the monospace font to Terminus”, or run `/live-comments:fonts`. A font can be installed in the system or embedded from a `.ttf`, `.otf`, `.woff` or `.woff2` file: Claude finds the font, copies its file to `~/.local/share/live-comments/fonts/` and records the choice in `~/.config/live-comments/fonts.json`; the server hands the file to the pages. Reload the open pages to see the change. `/live-comments:fonts reset` returns the default fonts.
+Ask Claude in your own words, or run `/live-comments:config` with the request, for example `/live-comments:config change the monospace font to Terminus` or `/live-comments:config green accent, always dark`. The settings stay in your own files in `~/.config/live-comments/`, outside the plugin and any repository. Reload the open pages to see a change; ask to reset the fonts or the colors to return the defaults.
+
+- **Fonts.** The pages use two fonts: the text font and the monospace font of code, the changes page, paths and the status bar values. A font can be installed in the system or embedded from a `.ttf`, `.otf`, `.woff` or `.woff2` file: Claude finds the font, copies its file to `~/.local/share/live-comments/fonts/` and records the choice in `~/.config/live-comments/fonts.json`; the server hands the file to the pages.
+- **Theme.** The pages paint with a palette of named colors — background, cards, text, accent, the user's questions, added and removed lines and others — each with a value for the light and the dark scheme; by default the pages follow the scheme of the system. Claude records the colors you change, and the scheme if you want it fixed, in `~/.config/live-comments/theme.json`. The theme also colors the comment controls on the HTML pages with comments, not the pages themselves.
 
 ### Requirements
 

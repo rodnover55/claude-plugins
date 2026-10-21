@@ -34,10 +34,12 @@
   css.rel = "stylesheet";
   css.href = ORIGIN + "/embed.css";
   document.head.appendChild(css);
-  var fonts = document.createElement("link");
-  fonts.rel = "stylesheet";
-  fonts.href = ORIGIN + "/fonts.css";
-  document.head.appendChild(fonts);
+  ["/fonts.css", "/theme.css"].forEach(function (href) {
+    var link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = ORIGIN + href;
+    document.head.appendChild(link);
+  });
 
   function elOf(node) {
     return node && node.nodeType === 1 ? node : node && node.parentNode;

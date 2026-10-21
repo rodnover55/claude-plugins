@@ -466,7 +466,10 @@
   function mermaid() {
     if (!mermaidLib) {
       mermaidLib = import(MERMAID_URL).then(function (m) {
-        var dark = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches;
+        // The scheme forced by the user's theme, otherwise the one of the system.
+        var scheme = getComputedStyle(document.documentElement).colorScheme;
+        var dark = scheme === "dark" || scheme !== "light" &&
+          !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
         m.default.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
         return m.default;
       });

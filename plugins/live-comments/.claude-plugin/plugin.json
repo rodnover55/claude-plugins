@@ -1,6 +1,6 @@
 {
   "name": "live-comments",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Live discussion pages for a Claude Code session: a tree of questions answered in the same session, comments on HTML pages, and a VS Code-like review of git changes",
   "author": {
     "name": "Sergei Melnikov"

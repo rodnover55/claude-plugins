@@ -1,15 +1,24 @@
+/* The palette: each color --lc-NAME is --lc-NAME-light in the light scheme and
+   --lc-NAME-dark in the dark one; the user's theme (/theme.css) overrides them
+   and may force a scheme with --lc-scheme. */
 :root{
-  --lc-bg:#f6f7f9;--lc-card:#fff;--lc-text:#1f2328;--lc-muted:#5f6b7a;--lc-line:#d9dee5;
-  --lc-accent:#2563eb;--lc-accent-soft:rgba(37,99,235,.12);--lc-bad:#c2410c;--lc-good:#15803d;--lc-warn:#b45309;
+  --lc-bg-light:#f6f7f9;--lc-bg-dark:#0f1115;--lc-bg:light-dark(var(--lc-bg-light),var(--lc-bg-dark));
+  --lc-card-light:#fff;--lc-card-dark:#171a21;--lc-card:light-dark(var(--lc-card-light),var(--lc-card-dark));
+  --lc-text-light:#1f2328;--lc-text-dark:#e6e9ef;--lc-text:light-dark(var(--lc-text-light),var(--lc-text-dark));
+  --lc-muted-light:#5f6b7a;--lc-muted-dark:#9aa4b2;--lc-muted:light-dark(var(--lc-muted-light),var(--lc-muted-dark));
+  --lc-line-light:#d9dee5;--lc-line-dark:#2a303b;--lc-line:light-dark(var(--lc-line-light),var(--lc-line-dark));
+  --lc-accent-light:#2563eb;--lc-accent-dark:#60a5fa;--lc-accent:light-dark(var(--lc-accent-light),var(--lc-accent-dark));
+  --lc-accent-soft-light:rgba(37,99,235,.12);--lc-accent-soft-dark:rgba(96,165,250,.14);--lc-accent-soft:light-dark(var(--lc-accent-soft-light),var(--lc-accent-soft-dark));
+  --lc-bad-light:#c2410c;--lc-bad-dark:#fb923c;--lc-bad:light-dark(var(--lc-bad-light),var(--lc-bad-dark));
+  --lc-good-light:#15803d;--lc-good-dark:#4ade80;--lc-good:light-dark(var(--lc-good-light),var(--lc-good-dark));
+  --lc-warn-light:#b45309;--lc-warn-dark:#facc15;--lc-warn:light-dark(var(--lc-warn-light),var(--lc-warn-dark));
+  --lc-user-light:#f59e0b;--lc-user-dark:#f59e0b;--lc-user:light-dark(var(--lc-user-light),var(--lc-user-dark));
+  --lc-on-accent-light:#fff;--lc-on-accent-dark:#fff;--lc-on-accent:light-dark(var(--lc-on-accent-light),var(--lc-on-accent-dark));
+  --lc-add-light:rgba(34,197,94,.15);--lc-add-dark:rgba(34,197,94,.15);--lc-add:light-dark(var(--lc-add-light),var(--lc-add-dark));
+  --lc-del-light:rgba(239,68,68,.14);--lc-del-dark:rgba(239,68,68,.14);--lc-del:light-dark(var(--lc-del-light),var(--lc-del-dark));
   --lc-font-default:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--lc-font:var(--lc-font-default);
   --lc-mono-default:ui-monospace,Menlo,Consolas,monospace;--lc-mono:var(--lc-mono-default);
-  color-scheme:light dark;
-}
-@media (prefers-color-scheme: dark){
-  :root{
-    --lc-bg:#0f1115;--lc-card:#171a21;--lc-text:#e6e9ef;--lc-muted:#9aa4b2;--lc-line:#2a303b;
-    --lc-accent:#60a5fa;--lc-accent-soft:rgba(96,165,250,.14);--lc-bad:#fb923c;--lc-good:#4ade80;--lc-warn:#facc15;
-  }
+  color-scheme:var(--lc-scheme,light dark);
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--lc-bg);color:var(--lc-text);font:15px/1.5 var(--lc-font)}
@@ -32,7 +41,7 @@ a:hover{text-decoration:underline}
 .lc-hint{color:var(--lc-muted);font-size:14px}
 .lc-btn{font:inherit;font-size:13px;line-height:1.3;border:1px solid var(--lc-line);background:var(--lc-card);color:var(--lc-text);border-radius:8px;padding:6px 12px;cursor:pointer}
 .lc-btn:hover{border-color:var(--lc-accent)}
-.lc-btn.primary{background:var(--lc-accent);border-color:var(--lc-accent);color:#fff}
+.lc-btn.primary{background:var(--lc-accent);border-color:var(--lc-accent);color:var(--lc-on-accent)}
 .lc-btn.lc-resolve{color:var(--lc-good);border-color:var(--lc-good)}
 .lc-btn.lc-decline{color:var(--lc-muted)}
 .lc-btn.lc-reopen{color:var(--lc-muted)}
@@ -79,13 +88,13 @@ a:hover{text-decoration:underline}
 .lc-b-draft{color:var(--lc-muted);border-color:var(--lc-muted);border-style:dashed}
 @keyframes lc-pulse{50%{opacity:.45}}
 .lc-meta{flex:none;font-size:12px;color:var(--lc-muted);white-space:nowrap}
-.lc-new{flex:none;background:var(--lc-accent);color:#fff;border-radius:999px;padding:0 7px;font-size:11px;line-height:18px;font-weight:700}
+.lc-new{flex:none;background:var(--lc-accent);color:var(--lc-on-accent);border-radius:999px;padding:0 7px;font-size:11px;line-height:18px;font-weight:700}
 .lc-topic-head{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin-bottom:10px}
 .lc-ctx{margin:4px 0 10px}
 .lc-src{font-size:12px;color:var(--lc-muted);font-weight:600}
-.lc-quote{margin:4px 0 0;padding:2px 0 2px 10px;border-left:3px solid #f59e0b;font-size:13.5px;color:var(--lc-muted)}
+.lc-quote{margin:4px 0 0;padding:2px 0 2px 10px;border-left:3px solid var(--lc-user);font-size:13.5px;color:var(--lc-muted)}
 .lc-msg{margin:8px 0;padding:8px 10px;border:1px solid var(--lc-line);border-radius:8px;background:var(--lc-card)}
-.lc-msg.lc-user{border-left:3px solid #f59e0b}
+.lc-msg.lc-user{border-left:3px solid var(--lc-user)}
 .lc-msg.lc-claude{border-left:3px solid var(--lc-accent)}
 .lc-msg.lc-decision,.lc-msg.lc-subdecision{border-left:3px solid var(--lc-good)}
 .lc-msg.lc-revoked{border-left-color:var(--lc-muted);opacity:.7}
@@ -202,7 +211,7 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-fname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .lc-fname mark{background:none;color:var(--lc-accent);font-weight:700}
 .lc-fseen{flex:none;color:var(--lc-good);font-weight:700}
-.lc-fq{flex:none;padding:0 6px;border-radius:999px;background:var(--lc-warn);color:#fff;font-size:11px;font-weight:700;line-height:16px;font-family:var(--lc-font)}
+.lc-fq{flex:none;padding:0 6px;border-radius:999px;background:var(--lc-warn);color:var(--lc-on-accent);font-size:11px;font-weight:700;line-height:16px;font-family:var(--lc-font)}
 .lc-fst{flex:none;width:14px;text-align:center;font-weight:700;font-family:var(--lc-mono);font-size:12px}
 .lc-fst-M{color:var(--lc-warn)}
 .lc-fst-A,.lc-fst-U{color:var(--lc-good)}
@@ -239,14 +248,14 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-ln:hover{color:var(--lc-accent)}
 .lc-sign{text-align:center;color:var(--lc-muted);user-select:none}
 .lc-code{white-space:pre-wrap;overflow-wrap:anywhere;padding:0 10px 0 2px!important;tab-size:4}
-.lc-dr-add{background:rgba(34,197,94,.15)}
+.lc-dr-add{background:var(--lc-add)}
 .lc-dr-add .lc-sign{color:var(--lc-good)}
-.lc-dr-del{background:rgba(239,68,68,.14)}
+.lc-dr-del{background:var(--lc-del)}
 .lc-dr-del .lc-sign{color:var(--lc-bad)}
 .lc-dr-hunk td{background:var(--lc-accent-soft);color:var(--lc-muted);padding-top:3px!important;padding-bottom:3px!important}
 .lc-dr-hunk .lc-code{padding-left:10px!important}
-.lc-dtable td.lc-cdel{background:rgba(239,68,68,.14)}
-.lc-dtable td.lc-cadd{background:rgba(34,197,94,.15)}
+.lc-dtable td.lc-cdel{background:var(--lc-del)}
+.lc-dtable td.lc-cadd{background:var(--lc-add)}
 .lc-dtable td.lc-cfill{background:repeating-linear-gradient(-45deg,transparent 0 5px,rgba(127,127,127,.12) 5px 6px)}
 /* Middle column: change-block buttons, as in VS Code. */
 .lc-mid{text-align:center;white-space:nowrap;user-select:none;padding-top:1px!important}
@@ -254,12 +263,12 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-blkbtn{width:18px;height:18px;margin:0 1px;padding:0;border:1px solid var(--lc-line);border-radius:4px;background:var(--lc-card);color:var(--lc-muted);font:700 13px/15px system-ui,sans-serif;cursor:pointer;opacity:.45}
 .lc-blk:hover .lc-blkbtn{opacity:1;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .lc-blkbtn.lc-stage-block{color:var(--lc-good)}
-.lc-blkbtn.lc-stage-block:hover{border-color:var(--lc-good);background:var(--lc-good);color:#fff}
-.lc-blkbtn.lc-revert-block:hover{border-color:var(--lc-bad);background:var(--lc-bad);color:#fff}
-.lc-blkbtn.lc-unstage-block:hover{border-color:var(--lc-accent);background:var(--lc-accent);color:#fff}
+.lc-blkbtn.lc-stage-block:hover{border-color:var(--lc-good);background:var(--lc-good);color:var(--lc-on-accent)}
+.lc-blkbtn.lc-revert-block:hover{border-color:var(--lc-bad);background:var(--lc-bad);color:var(--lc-on-accent)}
+.lc-blkbtn.lc-unstage-block:hover{border-color:var(--lc-accent);background:var(--lc-accent);color:var(--lc-on-accent)}
 .lc-noeol{margin-left:10px;color:var(--lc-muted);font-size:11px;user-select:none}
 .lc-dextra>td{padding:6px 12px 8px 72px!important;background:var(--lc-bg);font:14px/1.5 var(--lc-font);white-space:normal}
-.lc-dcard{border:1px solid var(--lc-line);border-left:3px solid #f59e0b;border-radius:8px;background:var(--lc-card);max-width:860px}
+.lc-dcard{border:1px solid var(--lc-line);border-left:3px solid var(--lc-user);border-radius:8px;background:var(--lc-card);max-width:860px}
 .lc-dcard.lc-resolved{border-left-color:var(--lc-good)}
 .lc-dcard.lc-declined{border-left-color:var(--lc-line)}
 .lc-dcard-head{display:flex;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;min-width:0}
@@ -276,7 +285,7 @@ html.lc-has-sbar .lc-toast{bottom:52px}
 .lc-dloose-item{margin-top:8px}
 .lc-dquote{margin:4px 0 6px;padding:4px 0;border:1px solid var(--lc-line);border-radius:6px;background:var(--lc-card);font-size:12.5px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
 .lc-dq{padding:0 8px}
-.lc-dq-add{background:rgba(34,197,94,.15)}
-.lc-dq-del{background:rgba(239,68,68,.14)}
+.lc-dq-add{background:var(--lc-add)}
+.lc-dq-del{background:var(--lc-del)}
 .lc-dbar{position:absolute;z-index:30;display:flex;gap:6px;padding:5px;background:var(--lc-card);border:1px solid var(--lc-line);border-radius:9px;box-shadow:0 6px 18px rgba(0,0,0,.18)}
 .lc-dbar[hidden]{display:none}

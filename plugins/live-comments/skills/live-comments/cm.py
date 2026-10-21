@@ -62,7 +62,8 @@ FILE of branch, ask and chat is a JSON list [{"title": question in one line,
 --session ID. Storage: ~/.local/share/live-comments/sessions/<session id>.json
 ($XDG_DATA_HOME/live-comments/sessions when XDG_DATA_HOME is set). The
 fonts of the pages: ~/.config/live-comments/fonts.json ($XDG_CONFIG_HOME
-when set), their files in ~/.local/share/live-comments/fonts.
+when set), their files in ~/.local/share/live-comments/fonts; the colors of
+the pages: ~/.config/live-comments/theme.json.
 """
 
 import argparse
@@ -99,10 +100,17 @@ FONT_ROLES = {"text": "--lc-font", "mono": "--lc-mono"}
 FONT_TYPES = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
               ".ttf": ("font/ttf", "truetype"), ".otf": ("font/otf", "opentype")}
 FONT_FAMILY = re.compile(r'^[^"\\;{}<>\n\r]{1,80}$')
+# The user's colors of the pages, the names of the colors of the palette and
+# the CSS values of --lc-scheme for the schemes the theme may force.
+THEME_FILE = statusfeed.BAR_DIR / "theme.json"
+THEME_COLORS = ("bg", "card", "text", "muted", "line", "accent", "accent-soft", "bad", "good", "warn",
+                "user", "on-accent", "add", "del", "hl", "hl-answered", "hl-resolved")
+THEME_SCHEMES = {"light": "light", "dark": "dark"}
+COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30}|[a-z-]{3,12}\([-\w\s.,%/#+]{1,120}\))$")
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 20
+VERSION = 21
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -676,11 +684,38 @@ def font_file(role):
     return f["file"], FONT_TYPES[f["file"].suffix.lower()][0]
 
 
+# ------------------------------------------------------------------ theme
+
+def theme_css():
+    """Returns /theme.css: the user's colors of THEME_FILE in the variables
+    --lc-NAME-light and --lc-NAME-dark of the palette, and the scheme the theme
+    forces in --lc-scheme. Unknown names, unsafe values and the whole
+    unreadable file are skipped."""
+    try:
+        cfg = json.loads(THEME_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(cfg, dict):
+        return ""
+    decls = []
+    if cfg.get("scheme") in THEME_SCHEMES:
+        decls.append(f"--lc-scheme:{THEME_SCHEMES[cfg['scheme']]}")
+    for scheme in ("light", "dark"):
+        colors = cfg.get(scheme)
+        if not isinstance(colors, dict):
+            continue
+        for name, value in colors.items():
+            if name in THEME_COLORS and isinstance(value, str) and COLOR.match(value):
+                decls.append(f"--lc-{name}-{scheme}:{value}")
+    return ":root{" + ";".join(decls) + "}\n" if decls else ""
+
+
 # ----------------------------------------------------------------- server
 
 APP_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Discussion</title><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/fonts.css"></head>
+<title>Discussion</title><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/fonts.css">
+<link rel="stylesheet" href="/theme.css"></head>
 <body><main id="lc-app"></main>
 <script>window.LIVE_COMMENTS = %s;</script>
 <script src="/diff.js"></script>
@@ -694,7 +729,8 @@ def index_page(store):
         rows.append(f'<li><a href="/{sid}">{html.escape(s.get("label") or sid)}</a> · '
                     f'{"connected" if s.get("connected") else "not connected"} · {sid}</li>')
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Discussions</title>'
-            '<link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/fonts.css"></head><body><main id="lc-app"><h1>Session discussions</h1>'
+            '<link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/fonts.css">'
+            '<link rel="stylesheet" href="/theme.css"></head><body><main id="lc-app"><h1>Session discussions</h1>'
             f'<ul class="lc-sessions">{"".join(rows) or "<li>No sessions.</li>"}</ul></main></body></html>')
 
 
@@ -773,6 +809,8 @@ def make_handler(store, feed):
                 self.send_bytes((HERE / parts[0]).read_bytes(), STATIC[parts[0]] + "; charset=utf-8", cors=True)
             elif parts == ["fonts.css"]:
                 self.send_bytes(fonts_css().encode("utf-8"), "text/css; charset=utf-8", cors=True)
+            elif parts == ["theme.css"]:
+                self.send_bytes(theme_css().encode("utf-8"), "text/css; charset=utf-8", cors=True)
             elif len(parts) == 2 and parts[0] == "fonts":
                 found = font_file(parts[1])
                 if found:
