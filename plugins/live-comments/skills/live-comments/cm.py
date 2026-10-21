@@ -92,7 +92,7 @@ AUTO_APPLY_DEFAULT = DATA.parent / "auto-apply-default"
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 18
+VERSION = 19
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -185,6 +185,40 @@ def open_on_desktop(path):
     if code:
         return p.stderr.read().decode("utf-8", "replace").strip() or f"{cmd[0]} exited with code {code}"
     return None
+
+
+# SVG of PlantUML diagrams by the hash of their source: messages are shown again on every update of the page.
+PLANTUML_CACHE = {}
+PLANTUML_LOCK = threading.Lock()
+
+
+def plantuml_svg(source):
+    """The SVG of PlantUML diagram source, made by the local plantuml without
+    access to files and network. Source without @start… is taken as the body
+    of @startuml. A syntax error gives an SVG with the error. Returns (svg,
+    error): error is the text of a failure, svg is then None."""
+    if not re.match(r"\s*@start", source):
+        source = "@startuml\n" + source + "\n@enduml\n"
+    key = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    with PLANTUML_LOCK:
+        if key in PLANTUML_CACHE:
+            return PLANTUML_CACHE[key], None
+    env = dict(os.environ, PLANTUML_SECURITY_PROFILE="SANDBOX")
+    try:
+        p = subprocess.run(["plantuml", "-tsvg", "-charset", "UTF-8", "-pipe"], input=source.encode("utf-8"),
+                           capture_output=True, timeout=60, env=env)
+    except FileNotFoundError:
+        return None, "plantuml is not installed"
+    except subprocess.TimeoutExpired:
+        return None, "plantuml did not finish in 60 s"
+    svg = p.stdout.decode("utf-8", "replace")
+    if "<svg" not in svg:
+        return None, p.stderr.decode("utf-8", "replace").strip() or f"plantuml exited with code {p.returncode}"
+    with PLANTUML_LOCK:
+        if len(PLANTUML_CACHE) >= 200:
+            PLANTUML_CACHE.clear()
+        PLANTUML_CACHE[key] = svg
+    return svg, None
 
 
 # ---------------------------------------------------------------- storage
@@ -853,6 +887,9 @@ def make_handler(store, feed):
             if len(parts) == 3 and parts[0] == "api" and parts[2] == "open":
                 self.open_file(parts[1], data)
                 return
+            if parts == ["api", "plantuml"]:
+                self.plantuml(data)
+                return
             with store.cond:
                 if parts == ["api", "sessions"]:
                     self.open_session(data)
@@ -909,6 +946,18 @@ def make_handler(store, feed):
                 self.fail(f"could not open {path}: {err}", 500)
                 return
             self.send_json({"ok": True})
+
+        def plantuml(self, data):
+            """A PlantUML diagram of a message, {source} → {svg}. Only the
+            server's own pages may ask: the diagram runs a local program."""
+            if (self.headers.get("Origin") or "")[7:] not in hosts:
+                self.fail("diagrams are made only for the discussion pages", 403)
+                return
+            svg, err = plantuml_svg(str(data.get("source") or ""))
+            if err:
+                self.fail(err, 500)
+            else:
+                self.send_json({"svg": svg})
 
         def open_session(self, data):
             sid = data.get("session") or ""

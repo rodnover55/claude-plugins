@@ -123,8 +123,9 @@
   // ---- Markdown of messages and decisions, as in GitHub comments: headings,
   // paragraphs with their line breaks, lists (nested, tasks), quotes, code
   // blocks, tables, rules; inside lines — `code`, **bold**, *italic*,
-  // ~~strikethrough~~, links, images and bare addresses. Display only: HTML in
-  // the text is shown as text.
+  // ~~strikethrough~~, links, images and bare addresses; code blocks of
+  // Mermaid and PlantUML are drawn as diagrams. Display only: HTML in the text
+  // is shown as text.
 
   function esc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -383,7 +384,9 @@
         var close = fenceEnd(m), dedent = new RegExp("^ {0," + m[1].length + "}"), fenced = [];
         for (i++; i < lines.length && !close.test(lines[i]); i++) fenced.push(lines[i].replace(dedent, ""));
         i++;
-        add({ html: "<pre><code" + (m[3] ? ' class="language-' + esc(m[3]) + '"' : "") + ">" + esc(fenced.join("\n")) + "</code></pre>" });
+        var pre = "<pre><code" + (m[3] ? ' class="language-' + esc(m[3]) + '"' : "") + ">" + esc(fenced.join("\n")) + "</code></pre>";
+        var kind = DIAGRAM[m[3].toLowerCase()];
+        add({ html: kind ? '<div class="lc-diagram" data-kind="' + kind + '">' + pre + "</div>" : pre });
       } else if ((m = HEADING.exec(l))) {
         add({ html: heading(m[1].length, m[2] || "") });
         i++;
@@ -446,7 +449,93 @@
     var e = make("div", "lc-md" + (cls ? " " + cls : ""));
     e.innerHTML = mdToHtml(text);
     e.lcSrc = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    e.querySelectorAll(".lc-diagram").forEach(showDiagram);
     return e;
+  }
+
+  // ---- Diagrams of code blocks: ```mermaid is drawn in the page by Mermaid
+  // from the CDN, ```plantuml and ```puml by the local plantuml of the server.
+  // Until the diagram is ready, and if it fails, the block shows its source.
+
+  var DIAGRAM = { mermaid: "mermaid", plantuml: "plantuml", puml: "plantuml" };
+  var MERMAID_URL = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  // The HTML of ready diagrams and the promises of those being made, by kind and source.
+  var diagramCache = {};
+  var mermaidLib = null, mermaidSeq = 0;
+
+  function mermaid() {
+    if (!mermaidLib) {
+      mermaidLib = import(MERMAID_URL).then(function (m) {
+        var dark = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches;
+        m.default.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+        return m.default;
+      });
+      // A failed load is tried again with the next diagram.
+      mermaidLib.catch(function () { mermaidLib = null; });
+    }
+    return mermaidLib;
+  }
+
+  // The promise of the HTML of a diagram of kind from source.
+  function drawDiagram(kind, source) {
+    if (kind === "mermaid") {
+      return mermaid().then(function (lib) {
+        var id = "lc-mermaid-" + ++mermaidSeq;
+        return lib.render(id, source).then(function (r) {
+          return r.svg;
+        }, function (e) {
+          // Mermaid leaves the element of a failed diagram in the page.
+          var left = document.getElementById("d" + id);
+          if (left) left.remove();
+          throw e;
+        });
+      });
+    }
+    return fetch("/api/plantuml", {
+      method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: source })
+    }).then(function (r) {
+      return r.json().then(function (d) {
+        if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+        // As an image: links and scripts of the SVG do not act in the page.
+        var url = URL.createObjectURL(new Blob([d.svg], { type: "image/svg+xml" }));
+        return '<img src="' + url + '" alt="PlantUML">';
+      });
+    });
+  }
+
+  // Draws the diagram of block el: the diagram is shown instead of the source,
+  // the "source" button switches between them.
+  function showDiagram(el) {
+    var kind = el.getAttribute("data-kind"), source = el.textContent, key = kind + "\n" + source;
+    function put(html) {
+      var view = make("div", "lc-diagram-view");
+      view.innerHTML = html;
+      var toggle = make("button", "lc-diagram-toggle", "source");
+      toggle.type = "button";
+      toggle.addEventListener("click", function () {
+        toggle.textContent = el.classList.toggle("lc-diagram-source") ? "diagram" : "source";
+      });
+      el.insertBefore(view, el.firstChild);
+      el.insertBefore(toggle, el.firstChild);
+      el.classList.add("lc-diagram-ready");
+    }
+    if (typeof diagramCache[key] === "string") {
+      put(diagramCache[key]);
+      return;
+    }
+    if (!diagramCache[key]) {
+      diagramCache[key] = drawDiagram(kind, source).then(function (html) {
+        diagramCache[key] = html;
+        return html;
+      }, function (e) {
+        delete diagramCache[key];
+        throw e;
+      });
+    }
+    diagramCache[key].then(put, function (e) {
+      el.appendChild(make("div", "lc-diagram-error", (kind === "mermaid" ? "Mermaid: " : "PlantUML: ") + (e && e.message || e)));
+    });
   }
 
   // The part of range r inside element el.

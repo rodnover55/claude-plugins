@@ -34,6 +34,8 @@ Run `/live-comments` (or `/live-comments:live-comments` if another command alrea
 - **Changes page** — a VS Code-like review of the repository's git changes: stage or discard files, blocks and selected lines, and ask questions on lines.
 - **Chat** — while the discussion is connected, questions and requests you write in the chat become topics on the page. When no topics are open, a message with a single question or request is answered or carried out right away in the chat; a message with several becomes topics.
 
+Code blocks ```` ```mermaid ```` and ```` ```plantuml ```` (or ```` ```puml ````) in messages and decisions are shown as diagrams: Mermaid is drawn in the browser (loaded from the jsDelivr CDN), PlantUML by the local `plantuml` command, which must be installed for it.
+
 Press `?` on any discussion page for keyboard shortcuts. Ask Claude to finish the discussion to get a summary of decisions and open questions.
 
 When the Claude Code session ends (exit or `/clear`), the plugin's `SessionEnd` hook disconnects it from the discussion: the topics stay on the server, and the server stops when no connected sessions are left. `/live-comments` in a resumed session with the same id connects it again with the same topics.

@@ -109,6 +109,15 @@ a:hover{text-decoration:underline}
 .lc-md th,.lc-md td{padding:3px 8px;border:1px solid var(--lc-line);text-align:left;vertical-align:top}
 .lc-md th{background:var(--lc-bg)}
 .lc-md img{max-width:100%}
+.lc-diagram{position:relative;margin:0 0 6px}
+.lc-diagram-view{overflow-x:auto;padding:8px;border:1px solid var(--lc-line);border-radius:6px;background:var(--lc-card)}
+.lc-diagram-view img{display:block;padding:6px;background:#fff;border-radius:4px}
+.lc-diagram-view svg{display:block;max-width:100%;height:auto}
+.lc-diagram-ready>pre,.lc-diagram-source>.lc-diagram-view{display:none}
+.lc-diagram-source>pre{display:block}
+.lc-diagram-toggle{position:absolute;top:4px;right:4px;z-index:1;font:inherit;font-size:11.5px;border:1px solid var(--lc-line);background:var(--lc-card);color:var(--lc-muted);border-radius:6px;padding:1px 6px;cursor:pointer;opacity:0;transition:opacity .15s}
+.lc-diagram:hover>.lc-diagram-toggle,.lc-diagram-toggle:focus{opacity:1}
+.lc-diagram-error{margin-top:-2px;font-size:12.5px;color:var(--lc-bad);white-space:pre-wrap}
 .lc-md del{color:var(--lc-muted)}
 .lc-md .lc-task{list-style:none}
 .lc-md .lc-task>input{margin:0 6px 0 -18px;vertical-align:-1px}
