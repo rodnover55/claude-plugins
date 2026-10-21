@@ -75,6 +75,12 @@ COLORS = {
     "hl": ("fragments with a question on the HTML pages", "#fde68a", "rgba(250,204,21,.3)"),
     "hl-answered": ("answered fragments on the HTML pages", "#dbeafe", "rgba(96,165,250,.22)"),
     "hl-resolved": ("resolved fragments on the HTML pages", "#dcfce7", "rgba(74,222,128,.18)"),
+    "code-keyword": ("keywords in code blocks", "#cf222e", "#ff7b72"),
+    "code-string": ("strings in code blocks", "#0a3069", "#a5d6ff"),
+    "code-number": ("numbers, constants, attributes and variables in code blocks", "#0550ae", "#79c0ff"),
+    "code-comment": ("comments in code blocks", "#6e7781", "#8b949e"),
+    "code-title": ("names of functions, classes and tags in code blocks", "#8250df", "#d2a8ff"),
+    "code-type": ("types, built-ins and parameters in code blocks", "#953800", "#ffa657"),
 }
 SCHEMES = ("auto", "light", "dark")
 # The first bytes of each font format the browsers read.

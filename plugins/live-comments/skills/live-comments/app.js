@@ -450,6 +450,7 @@
     e.innerHTML = mdToHtml(text);
     e.lcSrc = String(text || "").replace(/\r\n?/g, "\n").split("\n");
     e.querySelectorAll(".lc-diagram").forEach(showDiagram);
+    e.querySelectorAll("pre>code[class^='language-']").forEach(highlightCode);
     return e;
   }
 
@@ -539,6 +540,34 @@
     diagramCache[key].then(put, function (e) {
       el.appendChild(make("div", "lc-diagram-error", (kind === "mermaid" ? "Mermaid: " : "PlantUML: ") + (e && e.message || e)));
     });
+  }
+
+  // ---- Syntax highlighting of code blocks ```LANG by highlight.js from the
+  // CDN with its common languages; blocks of other languages stay plain.
+
+  var HLJS_URL = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11/es/highlight.min.js";
+  // The promise of the library and the library itself once it is loaded.
+  var hljsLoad = null, hljsLib = null;
+
+  // Colors the code of block el; once the library is loaded, before the block is shown.
+  function highlightCode(el) {
+    var lang = el.className.slice("language-".length).toLowerCase();
+    if (DIAGRAM[lang]) return;
+    function paint(lib) {
+      if (!lib.getLanguage(lang) || el.classList.contains("hljs")) return;
+      // highlight.js escapes the text of the code in the HTML it returns.
+      el.innerHTML = lib.highlight(el.textContent, { language: lang, ignoreIllegals: true }).value;
+      el.classList.add("hljs");
+    }
+    if (hljsLib) return paint(hljsLib);
+    if (!hljsLoad) {
+      hljsLoad = import(HLJS_URL).then(function (m) {
+        return (hljsLib = m.default);
+      });
+      // A failed load is tried again with the next block.
+      hljsLoad.catch(function () { hljsLoad = null; });
+    }
+    hljsLoad.then(paint, function () {});
   }
 
   // The part of range r inside element el.

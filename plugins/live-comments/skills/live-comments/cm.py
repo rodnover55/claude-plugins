@@ -104,13 +104,14 @@ FONT_FAMILY = re.compile(r'^[^"\\;{}<>\n\r]{1,80}$')
 # the CSS values of --lc-scheme for the schemes the theme may force.
 THEME_FILE = statusfeed.BAR_DIR / "theme.json"
 THEME_COLORS = ("bg", "card", "text", "muted", "line", "accent", "accent-soft", "bad", "good", "warn",
-                "user", "on-accent", "add", "del", "hl", "hl-answered", "hl-resolved")
+                "user", "on-accent", "add", "del", "hl", "hl-answered", "hl-resolved", "code-keyword",
+                "code-string", "code-number", "code-comment", "code-title", "code-type")
 THEME_SCHEMES = {"light": "light", "dark": "dark"}
 COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30}|[a-z-]{3,12}\([-\w\s.,%/#+]{1,120}\))$")
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 21
+VERSION = 22
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
