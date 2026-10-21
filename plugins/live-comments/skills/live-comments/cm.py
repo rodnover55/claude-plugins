@@ -60,7 +60,9 @@ The default session is CLAUDE_CODE_SESSION_ID.
 FILE of branch, ask and chat is a JSON list [{"title": question in one line,
 "text": question text}]. All commands except serve and stop accept
 --session ID. Storage: ~/.local/share/live-comments/sessions/<session id>.json
-($XDG_DATA_HOME/live-comments/sessions when XDG_DATA_HOME is set).
+($XDG_DATA_HOME/live-comments/sessions when XDG_DATA_HOME is set). The
+fonts of the pages: ~/.config/live-comments/fonts.json ($XDG_CONFIG_HOME
+when set), their files in ~/.local/share/live-comments/fonts.
 """
 
 import argparse
@@ -89,10 +91,18 @@ SERVER_LOG = DATA.parent / "server.log"
 KEPT_AUTO_APPLY = DATA / "auto-apply"
 # Auto-apply last chosen by the user in any session: new sessions start with it.
 AUTO_APPLY_DEFAULT = DATA.parent / "auto-apply-default"
+# The user's fonts of the pages and the copies of their font files.
+FONTS_FILE = statusfeed.BAR_DIR / "fonts.json"
+FONTS_DIR = DATA.parent / "fonts"
+# The font roles of the pages and the CSS variable of each.
+FONT_ROLES = {"text": "--lc-font", "mono": "--lc-mono"}
+FONT_TYPES = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
+              ".ttf": ("font/ttf", "truetype"), ".otf": ("font/otf", "opentype")}
+FONT_FAMILY = re.compile(r'^[^"\\;{}<>\n\r]{1,80}$')
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 19
+VERSION = 20
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -616,11 +626,61 @@ def stage_all(repo, path, staged):
         git(repo, "rm", "-r", "-q", "--cached", "--ignore-unmatch", *(spec or ["--", "."]))
 
 
+# ------------------------------------------------------------------ fonts
+
+def user_fonts():
+    """Returns the fonts of the pages from the user's file FONTS_FILE: a
+    dictionary role → {"family": name, "file": path or None}. Roles with an
+    unsafe name and the whole unreadable file are skipped."""
+    try:
+        cfg = json.loads(FONTS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    fonts = {}
+    for role in FONT_ROLES:
+        f = cfg.get(role) if isinstance(cfg, dict) else None
+        family = f.get("family") if isinstance(f, dict) else None
+        if not isinstance(family, str) or not FONT_FAMILY.match(family):
+            continue
+        path = f.get("file")
+        if isinstance(path, str) and path:
+            path = FONTS_DIR / Path(path).expanduser()
+            path = path if path.suffix.lower() in FONT_TYPES and path.is_file() else None
+        else:
+            path = None
+        fonts[role] = {"family": family, "file": path}
+    return fonts
+
+
+def fonts_css():
+    """Returns /fonts.css: the user's fonts before the default ones in the CSS
+    variables of the roles, and a font file of a role is loaded from
+    /fonts/<role>."""
+    rules, names = [], []
+    for role, f in user_fonts().items():
+        name = f["family"]
+        if f["file"]:
+            fmt = FONT_TYPES[f["file"].suffix.lower()][1]
+            rules.append(f'@font-face{{font-family:"{name}";src:url(/fonts/{role}) format("{fmt}");font-display:swap}}')
+        names.append(f'{FONT_ROLES[role]}:"{name}",var({FONT_ROLES[role]}-default)')
+    if names:
+        rules.append(":root{" + ";".join(names) + "}")
+    return "\n".join(rules) + "\n"
+
+
+def font_file(role):
+    """Returns the font file of role and its MIME type, or None."""
+    f = user_fonts().get(role)
+    if not f or not f["file"]:
+        return None
+    return f["file"], FONT_TYPES[f["file"].suffix.lower()][0]
+
+
 # ----------------------------------------------------------------- server
 
 APP_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Discussion</title><link rel="stylesheet" href="/app.css"></head>
+<title>Discussion</title><link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/fonts.css"></head>
 <body><main id="lc-app"></main>
 <script>window.LIVE_COMMENTS = %s;</script>
 <script src="/diff.js"></script>
@@ -634,7 +694,7 @@ def index_page(store):
         rows.append(f'<li><a href="/{sid}">{html.escape(s.get("label") or sid)}</a> · '
                     f'{"connected" if s.get("connected") else "not connected"} · {sid}</li>')
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Discussions</title>'
-            '<link rel="stylesheet" href="/app.css"></head><body><main id="lc-app"><h1>Session discussions</h1>'
+            '<link rel="stylesheet" href="/app.css"><link rel="stylesheet" href="/fonts.css"></head><body><main id="lc-app"><h1>Session discussions</h1>'
             f'<ul class="lc-sessions">{"".join(rows) or "<li>No sessions.</li>"}</ul></main></body></html>')
 
 
@@ -711,6 +771,14 @@ def make_handler(store, feed):
                     self.send_bytes(index_page(store).encode("utf-8"), "text/html; charset=utf-8")
             elif len(parts) == 1 and parts[0] in STATIC:
                 self.send_bytes((HERE / parts[0]).read_bytes(), STATIC[parts[0]] + "; charset=utf-8", cors=True)
+            elif parts == ["fonts.css"]:
+                self.send_bytes(fonts_css().encode("utf-8"), "text/css; charset=utf-8", cors=True)
+            elif len(parts) == 2 and parts[0] == "fonts":
+                found = font_file(parts[1])
+                if found:
+                    self.send_bytes(found[0].read_bytes(), found[1], cors=True)
+                else:
+                    self.send_bytes("No such font".encode("utf-8"), "text/plain; charset=utf-8", 404)
             elif parts[0] == "api":
                 self.api_get(parts[1:], q)
             else:
