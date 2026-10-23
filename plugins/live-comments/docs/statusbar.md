@@ -20,14 +20,14 @@ The feed works only for sessions with an open discussion page: a page marks its 
 
 | File | Role |
 | :- | :- |
-| `skills/live-comments/statusfeed.py` | The feed: the transcript reader, the JSON built from it, the rate limits with `claude -p`, the run of the bar file |
-| `skills/live-comments/cm.py` | The server: `POST /api/<session>/statusline`, the `bar=1` mark of `/wait`, `publish_bar`, the `status` field of the session state |
+| `skills/start/statusfeed.py` | The feed: the transcript reader, the JSON built from it, the rate limits with `claude -p`, the run of the bar file |
+| `skills/start/cm.py` | The server: `POST /api/<session>/statusline`, the `bar=1` mark of `/wait`, `publish_bar`, the `status` field of the session state |
 | `~/.config/live-comments/statusbar.py` or `statusbar.js` | The user's bar file: a status line JSON in, the bar out. Not part of the plugin |
 | `skills/statusbar/statusbar.py`, `statusbar.js` | The default bar in Python and in JavaScript; the `statusbar` skill copies one of them as the user's file |
 | `skills/statusbar/protocol.md` | The input and the format of the bar: items, blocks, styles |
 | `skills/statusbar/check.py` | Runs a bar file on a sample input, validates the output against the protocol and prints the bar as text |
 | `skills/statusbar/SKILL.md` | Instructions for Claude: prepare, change, switch the language of, reset and remove the user's file |
-| `skills/live-comments/app.js`, `app.css` | The pages: `renderStatus`, `sbBlock`, `sbStyle`, `onlyStatus`; the look `.lc-sbar`, `.lc-sb-*` |
+| `skills/start/app.js`, `app.css` | The pages: `renderStatus`, `sbBlock`, `sbStyle`, `onlyStatus`; the look `.lc-sbar`, `.lc-sb-*` |
 
 ## The input
 
@@ -96,8 +96,8 @@ The format is JSON of fixed blocks rather than HTML so that the user's file can 
 
 A new block or style is a change of the protocol, so it goes into all its readers at once:
 1. `skills/statusbar/protocol.md`: the row of the block or the style.
-2. `skills/live-comments/app.js`: a branch in `sbBlock`, or the name in `SB_STYLES`.
-3. `skills/live-comments/app.css`: the look, as `.lc-sb-<name>`.
+2. `skills/start/app.js`: a branch in `sbBlock`, or the name in `SB_STYLES`.
+3. `skills/start/app.css`: the look, as `.lc-sb-<name>`.
 4. `skills/statusbar/check.py`: the block and its options in `BLOCKS`, the check of its value in `block_errors` and its text in `block_text`, or the name in `STYLES`.
 5. If the default bar should use it: `statusbar.py` and `statusbar.js` together.
 
@@ -106,5 +106,5 @@ Older pages skip a block they do not know, so the protocol version grows only wh
 ## Checking
 
 - A bar file: `python3 skills/statusbar/check.py [FILE]`; without `FILE` it checks the user's file. `--input <file>` takes a real input instead of the sample.
-- The JSON from a transcript: `python3 -c "import statusfeed, json; t = statusfeed.Transcript('<session id>'); t.refresh(); print(json.dumps(t.status_json(None)))"` in `skills/live-comments/`; its output works as `--input` of `check.py`.
+- The JSON from a transcript: `python3 -c "import statusfeed, json; t = statusfeed.Transcript('<session id>'); t.refresh(); print(json.dumps(t.status_json(None)))"` in `skills/start/`; its output works as `--input` of `check.py`.
 - The whole chain: open the session page; the server log `~/.local/share/live-comments/server.log` has the errors of the bar file and of `claude -p`.

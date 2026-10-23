@@ -21,7 +21,7 @@ The settings are the user's own files in `~/.config/live-comments/` (`$XDG_CONFI
 - `CONFIG theme scheme auto|light|dark` — the scheme of the pages; `auto` follows the system;
 - `CONFIG theme reset [NAME...]` — the default colors `NAME`; without `NAME`, all colors and the scheme.
 
-After every command, tell the user what the settings now are, from its output, and that the open pages show them after a reload. If the output says the server is an older version, the server has to be restarted: `python3 <live-comments skill directory>/cm.py stop`, then `/live-comments` again.
+After every command, tell the user what the settings now are, from its output, and that the open pages show them after a reload. If the output says the server is an older version, the server has to be restarted: `python3 ${CLAUDE_SKILL_DIR}/../start/cm.py stop`, then `/live-comments:start` again.
 
 ## Fonts
 

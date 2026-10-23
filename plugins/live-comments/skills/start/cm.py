@@ -16,7 +16,10 @@ The default session is CLAUDE_CODE_SESSION_ID.
                                 (detached from the session), connect the
                                 session, print the link
     cm.py embed PAGE            write the session's embed.js script into an
-                                HTML file
+                                HTML file or a template with </body>: before
+                                the last </body>, without it at the end; an
+                                embed.js script written before is replaced
+    cm.py embed --print         print the script line without writing it
     cm.py wait                  wait for the first topic of the session where
                                 something awaits Claude, or for the "Apply
                                 resolved" plan, and print it; after the
@@ -111,12 +114,25 @@ COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30}|[a-z-]{3,12}\([-\w\s.,%/
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 22
+VERSION = 23
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 STATE_NAME = {"open": "open", "resolved": "resolved", "declined": "declined"}
-EMBED_TAG = re.compile(r'\n?<script[^>]*src="http://127\.0\.0\.1:\d+/embed\.js"[^>]*></script>')
+# The line of the embed.js script of a session that embed writes into a page:
+# a script of 127.0.0.1 with data-session, its attributes in any order and on
+# any lines, taking whole lines — a template that trims whitespace may glue it
+# to the text before it. Other scripts and examples inside a line stay.
+EMBED_LINE = re.compile(r'(?:^[ \t]*|(?<=\S))<script\b'
+                        r'(?=[^>]*\bsrc=["\']http://127\.0\.0\.1:\d+/embed\.js["\'])'
+                        r'(?=[^>]*\bdata-session=["\'][A-Za-z0-9_-]{1,80}["\'])[^>]*>\s*</script>'
+                        r'[ \t]*(?:\r?\n|\Z|(?=</[Bb][Oo][Dd][Yy]\s*>))', re.M)
+
+# Comments of HTML and of template engines (Jinja and Django, Handlebars and
+# Mustache, ERB, Go templates): a </body> in them is not the end of the body.
+RAW_TEXT = re.compile(r"(<(script|style|textarea)\b[^>]*>)(.*?)(</\2\s*>)", re.S | re.I)
+PAGE_COMMENT = re.compile(r"<!--.*?-->|\{#.*?#\}|\{%-?\s*comment\s*-?%\}.*?\{%-?\s*endcomment\s*-?%\}"
+                          r"|\{\{!--.*?--\}\}|\{\{!.*?\}\}|<%#.*?%>|\{\{-?\s*/\*.*?\*/\s*-?\}\}", re.S)
 
 
 def now():
@@ -1642,17 +1658,50 @@ def cmd_open(args):
 
 def cmd_embed(args):
     session = need_session(args)
+    tag = f'<script src="{ORIGIN}/embed.js" data-session="{session}"></script>'
+    if args.print:
+        print(tag)
+        return 0
+    if not args.page:
+        print("no page: pass PAGE or --print")
+        return 1
     page = Path(args.page).resolve()
     if not page.is_file():
         print(f"no page {page}")
         return 1
-    text = EMBED_TAG.sub("", page.read_text(encoding="utf-8"))
-    tag = f'\n<script src="{ORIGIN}/embed.js" data-session="{session}"></script>'
-    i = text.rfind("</body>")
-    text = text[:i] + tag + "\n" + text[i:] if i >= 0 else text + tag + "\n"
-    page.write_text(text, encoding="utf-8")
+    # The file's own line endings stay: only the script line changes.
+    try:
+        with open(page, encoding="utf-8", newline="") as f:
+            text = f.read()
+    except UnicodeDecodeError:
+        print(f"the page is not in UTF-8: {page}")
+        return 1
+    nl = "\r\n" if "\r\n" in text else "\n"
+    text = EMBED_LINE.sub("", text)
+    # </body> in a comment or in the text of a script, a style or a text field
+    # is not the end of the body.
+    markup = PAGE_COMMENT.sub(lambda m: " " * len(m.group()), text)
+    markup = RAW_TEXT.sub(lambda m: m.group(1) + " " * len(m.group(3)) + m.group(4), markup)
+    ends = list(re.finditer(r"</body\s*>", markup, re.I))
+    if ends:
+        # The line goes right before the last </body>: on the line of
+        # </body> with its indent, if </body> starts its line.
+        i = ends[-1].start()
+        j = text.rfind("\n", 0, i) + 1
+        if text[j:i].strip():
+            text = text[:i] + nl + tag + nl + text[i:]
+        else:
+            text = text[:j] + text[j:i] + tag + nl + text[j:]
+    else:
+        # A blank line before the line: in Markdown the script is then a block
+        # of its own, not a part of the last paragraph, list or footnote.
+        if text.strip():
+            text = text.rstrip("\r\n") + nl + nl
+        text += tag + nl
+    with open(page, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
     print(f"page: {page.as_uri()}")
-    print(f"written: {tag.strip()}")
+    print(f"written: {tag}" + ("" if ends else " (no </body>: at the end of the file)"))
 
 
 def sleep_till_killed():
@@ -1851,7 +1900,9 @@ def main():
     cmd("serve")
     cmd("stop")
     cmd("open").add_argument("--label")
-    cmd("embed", "page")
+    e = cmd("embed")
+    e.add_argument("page", nargs="?")
+    e.add_argument("--print", action="store_true")
     cmd("wait")
     cmd("leave")
     cmd("show")

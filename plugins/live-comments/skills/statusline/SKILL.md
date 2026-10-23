@@ -9,7 +9,7 @@ allowed-tools:
 
 # live-comments status line
 
-While the session has a discussion on the live-comments server (see the `live-comments` skill), the status line shows one more line:
+While the session has a discussion on the live-comments server (see the `start` skill, `/live-comments:start`), the status line shows one more line:
 
 ```
 [2] http://127.0.0.1:8765/<session id> ⧉
@@ -57,7 +57,7 @@ Files go to `~/.local/share/live-comments/` (`$XDG_DATA_HOME/live-comments/` whe
    - **`command` is an inline command**: move it into a new script `~/.claude/statusline-command.sh` that saves stdin in `input`, runs the old command with `printf '%s' "$input" | …`, and then adds the line as above; make the script the `command`. Keep the other `statusLine` fields, such as `padding`.
 4. **Check** the line script with this session's id:
    `printf '{"session_id":"%s"}' "${CLAUDE_SESSION_ID}" | python3 ~/.local/share/live-comments/live-comments-line.py --copy`
-   It prints the line if this session has a discussion (`/live-comments`); otherwise its output is empty, which is correct too.
+   It prints the line if this session has a discussion (`/live-comments:start`); otherwise its output is empty, which is correct too.
 5. Tell the user what was changed and that the click on ⧉ needs a terminal with OSC 8 links. If ⧉ is shown but not clickable, Claude Code may not have detected link support in the terminal: start it with `FORCE_HYPERLINK=1 claude`.
 
 ## Removal

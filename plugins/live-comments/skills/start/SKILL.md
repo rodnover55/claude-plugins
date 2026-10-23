@@ -1,12 +1,12 @@
 ---
-name: live-comments
-description: "Live discussion page of a Claude Code session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions and requests asked in chat become topics instead of chat answers; when no topics are open, a chat message with a single question or request is answered or carried out right away in chat. Otherwise, while the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start a discussion page, or invokes /live-comments."
+name: start
+description: "Start the live-comments discussion of a Claude Code session: start the live-comments server or connect the session to the running one, and answer the discussion. A live discussion page of the session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions and requests asked in chat become topics instead of chat answers; when no topics are open, a chat message with a single question or request is answered or carried out right away in chat. Otherwise, while the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start or connect a discussion page, or invokes /live-comments:start. To finish the discussion, use the stop skill (/live-comments:stop)."
 argument-hint: "[path to .html]"
 allowed-tools:
   - Bash(python3 ${CLAUDE_SKILL_DIR}/cm.py *)
 ---
 
-# live-comments — live discussion of a session
+# live-comments:start — live discussion of a session
 
 A **topic** is the discussion of one question. Topics form a tree: a question that comes up in the discussion of a topic becomes its **subquestion**, that is, a child topic.
 
@@ -35,7 +35,7 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
   - The “Ask a question” button at selected lines opens a question field under them. The question becomes a top-level topic with an anchor: the file, the lines and the diff fragment. Its discussion is shown under these lines with the same buttons as on a topic page. If the lines are no longer in the diff, the discussion stands above the file's diff with a quote.
   - The user decides what to stage and what to discard; Claude does not touch the index.
   - The “← Discussion” button and the Alt+U and Alt+H keys open the session page.
-- **HTML page** opens as a file (`file://`); the server does not serve it. The session's `embed.js` script is written into it.
+- **HTML page** opens as a file (`file://`); the server does not serve it. The session's `embed.js` script is written into it or into its source by the `embed` skill (`/live-comments:embed`).
   - From a selected fragment the script creates a session topic and highlights fragments that have topics.
   - A click on a highlight opens the topic on the server. If a fragment has several topics, a menu to choose from appears first.
 - **Claude's replies** appear on the pages without a reload. New replies are signalled by the “new” badge and a number in the tab title. A recorded decision, “Subquestion … resolved” and a list of subquestions do not count as new: they repeat what is already visible; a declined topic has no “new” marks. While Claude replies, while the question waits for Claude in the queue, or while Claude continues working on the question after a “taking this on” reply, a badge says so on the topic page right above the reply field and in the topic's row in the tree.
@@ -54,9 +54,10 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 1. Connect the session (as a regular command, not in the background):
    `CM open --label "<session topic in 2–4 words>"`
    The command starts the server if it is not running, remembers the git repository of the current directory and prints the links to the session page and to the changes page.
-2. If there is an HTML page (the skill's argument or the page being talked about), write the session script into it:
+   If it answers that another server version is on the port — the plugin was updated while the server ran — restart the server: `CM stop`, then `CM open` again.
+2. If there is an HTML page or its source (the skill's argument or the page being talked about), write the session script into it by the steps 2–4 of the `embed` skill (`/live-comments:embed`). For an HTML file it is
    `CM embed <page>`
-   The command inserts before `</body>` the line `<script src="http://127.0.0.1:8765/embed.js" data-session="…">` and prints the `file://` path. If the page is built by a generator, write this line into the generator's template too, otherwise a rebuild erases it.
+   The command inserts before `</body>` the line `<script src="http://127.0.0.1:8765/embed.js" data-session="…">` and prints the `file://` path. If the page is built from a source — a template, a generator, Markdown — the line goes into the source too, otherwise a rebuild erases it.
 3. Give the user the link to the session page and the `file://` path to the HTML page, if there is one. Give the link to the changes page if the user asks for a review of changes.
 4. Start waiting in the background (Bash with `run_in_background`):
    `CM wait`
@@ -64,7 +65,7 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 
 ## Decisions only
 
-While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved”, by auto-apply and by a chat message with one item while no topics are open (see “Question in the chat”): not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page (`CM embed`) and the decisions file in memory change.
+While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved”, by auto-apply and by a chat message with one item while no topics are open (see “Question in the chat”): not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page or its source (`CM embed`, the `embed` skill) and the decisions file in memory change.
 - A request to change something is not carried out: in a topic, answer that the change will be made by “Apply resolved” and include it in the topic's decision; from the chat, move it into the discussion, unless it is the only item of the message and no topics are open (see “Question in the chat”).
 - Reading code and files, gathering information and running checks is allowed: they change nothing.
 
@@ -128,7 +129,7 @@ Move the items into the discussion as top-level topics, one per item. Do not ope
 3. In the chat reply briefly with the links to the topics.
 4. The background `wait` will give these topics; answer them according to the rules of “Answering a topic”.
 
-Carry out requests about the discussion itself (write the script into a page, finish the discussion) in the chat as usual; the wait keeps running.
+Carry out requests about the discussion itself (write the script into a page) in the chat as usual; the wait keeps running. A request to finish the discussion is carried out by the `stop` skill (see “Stopping”).
 
 ## Decision
 
@@ -200,10 +201,7 @@ The phrase in the header of the session's pages describes what Claude is doing. 
 
 ## Stopping
 
-When the user asks to finish:
-1. Stop the background `wait` task.
-2. Close the session: `CM leave`. The command disconnects the session, deletes its discussion from the server and prints it in full: the tree of topics with states and every topic. This is the only copy. If no other connected sessions are left, the server stops. Do not stop it with `pkill -f`: the pattern also matches the command line of the shell itself.
-3. In the chat list the outcome: the decisions, and the questions left without an answer or without a decision (`[WAITING]`, “open”).
+When the user asks to finish the discussion, follow the `stop` skill (`/live-comments:stop`): it stops the background `wait`, closes the session with `CM leave` and lists the outcome in the chat.
 
 A new `open` in the same session starts the discussion anew, without the old topics, but with the session's auto-apply, on or off. The decisions stay in the project's memory.
 
@@ -219,4 +217,4 @@ When the Claude Code session ends — on exit or `/clear` — the plugin's `Sess
 - `CM disconnect` — disconnect the session and keep its discussion; the `SessionEnd` hook runs it with `--hook` (see “End of the Claude Code session”).
 - `CM thread <id>` — the whole topic.
 - `CM show` — a short tree of the session's topics, with “WAITING” marks.
-- `CM stop` — stop the server right away, for all sessions. The waits of connected sessions start it again from the current `cm.py`, so this is how the server is restarted with a new version.
+- `CM stop` — stop the server right away, for all sessions. The waits of connected sessions start it again from the current `cm.py`, so this is how the server is restarted with a new version. It does not finish the session's discussion: that is the `stop` skill (`/live-comments:stop`).

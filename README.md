@@ -26,19 +26,19 @@ To try a local checkout instead of GitHub, pass its path: `claude plugin marketp
 
 ## live-comments
 
-Run `/live-comments` (or `/live-comments:live-comments` if another command already uses that name), optionally with the path to an HTML page to comment on, or ask Claude to start a discussion page. Claude prints the link to the session page.
+Run `/live-comments:start`, optionally with the path to an HTML page to comment on, or ask Claude to start a discussion page. Claude starts the discussion server, or connects the session to the running one, and prints the link to the session page.
 
 - **Session page** — a tree of questions, one question per topic. Ask a question there, and Claude answers it in the same session; replies appear without a page reload. Several questions in one message are split into subquestions. When no question waits for your reply, the next reply of Claude opens by itself.
 - **Decisions** — “Resolve” asks Claude to record the topic's decision as a plan item; “Decline” drops a question. “Apply resolved” hands Claude the plan of all resolved questions to carry out. While the discussion is connected, Claude changes nothing until you press “Apply resolved”: words in topics or in the chat confirm nothing, except a single request in the chat while no topics are open (see **Chat**).
-- **HTML pages** — Claude writes a script tag into a local HTML page (a report, a mockup); select a fragment in the browser to ask a question about it.
+- **HTML pages** — Claude writes a script tag into a local HTML page (a report, a mockup); select a fragment in the browser to ask a question about it. To add a page later, run `/live-comments:embed` with the path to the HTML file or to its source — a template, a layout, a generator script or a Markdown document: Claude writes the tag into the source and into the page built from it, so a rebuild keeps it. The tag is tied to the session; remove it from a source before committing if it should not stay in the repository.
 - **Changes page** — a VS Code-like review of the repository's git changes: stage or discard files, blocks and selected lines, and ask questions on lines.
 - **Chat** — while the discussion is connected, questions and requests you write in the chat become topics on the page. When no topics are open, a message with a single question or request is answered or carried out right away in the chat; a message with several becomes topics.
 
 Code blocks ```` ```mermaid ```` and ```` ```plantuml ```` (or ```` ```puml ````) in messages and decisions are shown as diagrams: Mermaid is drawn in the browser (loaded from the jsDelivr CDN), PlantUML by the local `plantuml` command, which must be installed for it. Code blocks with a language (```` ```python ````, ```` ```js ```` and other common languages) are highlighted by highlight.js, loaded from the jsDelivr CDN.
 
-Press `?` on any discussion page for keyboard shortcuts. Ask Claude to finish the discussion to get a summary of decisions and open questions.
+Press `?` on any discussion page for keyboard shortcuts. Run `/live-comments:stop`, or ask Claude to finish the discussion, to disconnect the session and close its discussion on the server: Claude lists the decisions and the open questions in the chat, and the server stops when no connected sessions are left.
 
-When the Claude Code session ends (exit or `/clear`), the plugin's `SessionEnd` hook disconnects it from the discussion: the topics stay on the server, and the server stops when no connected sessions are left. `/live-comments` in a resumed session with the same id connects it again with the same topics.
+When the Claude Code session ends (exit or `/clear`), the plugin's `SessionEnd` hook disconnects it from the discussion: the topics stay on the server, and the server stops when no connected sessions are left. `/live-comments:start` in a resumed session with the same id connects it again with the same topics.
 
 ### Status line
 

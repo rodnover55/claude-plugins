@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/live-comments/cm.py\" disconnect --hook",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/skills/start/cm.py\" disconnect --hook",
             "timeout": 10
           }
         ]
