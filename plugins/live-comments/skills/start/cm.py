@@ -64,14 +64,22 @@ The default session is CLAUDE_CODE_SESSION_ID.
                                 SessionEnd hook: the session from the hook JSON
                                 on stdin, quiet, never starts the server; the
                                 session's wait does not end
+    cm.py sessions              the sessions that have files on the disk, the
+                                oldest first: label, state, the directory
+                                where the Claude Code session was started,
+                                size, last activity
+    cm.py purge ID...           delete sessions with all their files for good:
+                                the discussion, the images, the kept
+                                auto-apply; the last connected one stops the
+                                server
     cm.py serve                 the server in the current process (open starts
                                 it by itself)
     cm.py stop                  stop the server; wait commands restart it from
                                 the current cm.py
 
 FILE of branch, ask and chat is a JSON list [{"title": question in one line,
-"text": question text}]. All commands except serve and stop accept
---session ID. Storage: ~/.local/share/live-comments/sessions/<session id>.json
+"text": question text}]. All commands except serve, stop, sessions and
+purge accept --session ID. Storage: ~/.local/share/live-comments/sessions/<session id>.json
 ($XDG_DATA_HOME/live-comments/sessions when XDG_DATA_HOME is set), the
 images of a session in ~/.local/share/live-comments/images/<session id>. The
 fonts of the pages: ~/.config/live-comments/fonts.json ($XDG_CONFIG_HOME
@@ -134,7 +142,9 @@ COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30}|[a-z-]{3,12}\([-\w\s.,%/
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 31
+# The address of an image of a session in the text of a message: 1 — the session, 2 — the name.
+IMAGE_URL = re.compile(re.escape(ORIGIN) + r"/api/([A-Za-z0-9_-]{1,80})/images/(i[0-9a-f]{1,40}\.(?:png|jpg|gif|webp|avif|svg))")
+VERSION = 34
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -320,6 +330,37 @@ def read_session(sid):
         return None
 
 
+def session_files(sid):
+    """Returns the files of session sid on the disk: its discussion, the
+    discussion closed by leave and waiting for its report, the kept
+    auto-apply and the images."""
+    files = [DATA / (sid + ".json"), DATA / (sid + ".tmp"), DATA / "deleted" / (sid + ".json"), KEPT_AUTO_APPLY / sid]
+    files += sorted((IMAGES_DIR / sid).rglob("*"))
+    return [p for p in files if p.is_file()]
+
+
+def purge_files(sid):
+    """Deletes every file of session sid on the disk (see session_files)."""
+    for p in (DATA / (sid + ".json"), DATA / (sid + ".tmp"), DATA / "deleted" / (sid + ".json"), KEPT_AUTO_APPLY / sid):
+        p.unlink(missing_ok=True)
+    shutil.rmtree(IMAGES_DIR / sid, ignore_errors=True)
+
+
+def launch_dir(sid):
+    """Returns the directory where Claude Code session sid was started: the
+    first cwd of its transcript; None if there is no transcript."""
+    for path in statusfeed.CLAUDE_DIR.glob(f"projects/*/{sid}.jsonl"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    cwd = json.loads(line).get("cwd") if '"cwd"' in line else None
+                    if cwd:
+                        return cwd
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
+
+
 def upgrade_session(s):
     """Brings session s read from a file of an earlier version to the current
     one and returns it. Earlier versions requested the parent's decision by
@@ -396,6 +437,17 @@ class Store:
             (DATA / "deleted").mkdir(exist_ok=True)
             path.replace(DATA / "deleted" / path.name)
         shutil.rmtree(IMAGES_DIR / sid, ignore_errors=True)
+        self.cond.notify_all()
+
+    def purge(self, sid):
+        """Deletes session sid and every file of it for good, also when only
+        its files are left, and wakes those waiting: their requests to the
+        session get a 410 response."""
+        self.sessions.pop(sid, None)
+        self.working.pop(sid, None)
+        self.status.pop(sid, None)
+        self.deleted.add(sid)
+        purge_files(sid)
         self.cond.notify_all()
 
     def missing(self, sid):
@@ -1113,6 +1165,8 @@ def make_handler(store, feed):
                     self.open_session(data)
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "delete":
                     self.delete_session(parts[2])
+                elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "purge":
+                    self.purge_session(parts[2])
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "disconnect":
                     self.disconnect_session(parts[2], data)
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "apply":
@@ -1212,6 +1266,19 @@ def make_handler(store, feed):
             store.delete(sid)
             self.send_connected()
 
+        def purge_session(self, sid):
+            """The purge command: Store.purge. Only cm.py purges: pages in
+            the browser send Origin. If no connected sessions are left, stops
+            the server."""
+            if self.headers.get("Origin") is not None:
+                self.fail("sessions are purged only by cm.py purge", 403)
+                return
+            if not SAFE_ID.match(sid):
+                self.fail("invalid session id", 400)
+                return
+            store.purge(sid)
+            self.send_connected()
+
         def disconnect_session(self, sid, data):
             """The disconnect command, which the SessionEnd hook runs when the
             Claude Code session ends: the session is no longer connected, and
@@ -1302,13 +1369,16 @@ def make_handler(store, feed):
             self.send_json({"activity": s["activity"]})
 
         def add_image(self, sid, data):
-            """The image command: {data} — the bytes of a PNG, JPEG, GIF,
-            WebP, AVIF or SVG image of at most IMAGE_MAX in base64. Only
-            cm.py uploads: pages in the browser send Origin. The image lives
-            in the session until leave deletes it with the session. Responds
-            with its address."""
-            if self.headers.get("Origin") is not None:
-                self.fail("images are uploaded only by cm.py image", 403)
+            """The image command and an image pasted into a field of the
+            discussion pages: {data} — the bytes of a PNG, JPEG, GIF, WebP,
+            AVIF or SVG image of at most IMAGE_MAX in base64. Only cm.py,
+            which sends no Origin, and the server's own pages upload: not
+            file:// pages and not sandboxed frames, whose Origin is null. The
+            image lives in the session until leave deletes it with the
+            session. Responds with its address."""
+            origin = self.headers.get("Origin")
+            if origin is not None and origin[7:] not in hosts:
+                self.fail("images are uploaded only by cm.py image and the discussion pages", 403)
                 return
             try:
                 raw = base64.b64decode(str(data.get("data") or ""), validate=True)
@@ -1660,6 +1730,18 @@ def lines_of(a):
     return f"{span} of {where}"
 
 
+def image_files(text):
+    """Returns the files of the session images that text shows, in the order
+    of their addresses, without repeats; images deleted with their session
+    are skipped."""
+    files = []
+    for sid, name in IMAGE_URL.findall(text or ""):
+        path = IMAGES_DIR / sid / name
+        if path not in files and path.is_file():
+            files.append(path)
+    return files
+
+
 def format_topic(topics, t, task=None, hints=True):
     """Returns topic t as text for Claude: the path from the root, the quote,
     messages with ids, subquestions with decisions. With task marks what
@@ -1698,6 +1780,8 @@ def format_topic(topics, t, task=None, hints=True):
         mark = ("  ← AWAITING REPLY · CARRY OUT NOW" if m.get("carryOut") else "  ← AWAITING REPLY") \
             if task and m["id"] in task["questions"] else ""
         out += ["", f"--- {who}{kind} · {m['created']} · {m['id']}{mark}", m["text"]]
+        if m["author"] == "user":
+            out += [f"image file: {p}" for p in image_files(m["text"])]
     kids = [x for x in topics if x["parent"] == t["id"]]
     if kids:
         out += ["", "subquestions:"]
@@ -2044,6 +2128,99 @@ def cmd_leave(args):
     print(f"\nconnected sessions: {res['connected']}" + ("; server stopped" if res["connected"] == 0 else ""))
 
 
+def stored_ids():
+    """Returns the ids of the sessions that have files on the disk (see session_files)."""
+    ids = {p.stem for p in DATA.glob("*.json")} | {p.stem for p in (DATA / "deleted").glob("*.json")}
+    ids |= {p.name for p in IMAGES_DIR.glob("*") if p.is_dir()} | {p.name for p in KEPT_AUTO_APPLY.glob("*")}
+    return {x for x in ids if SAFE_ID.match(x)}
+
+
+def stored_session(sid):
+    """Returns session sid from its file, also closed by leave and waiting for its report, or {}."""
+    s = read_session(sid)
+    if s:
+        return s
+    try:
+        return json.loads((DATA / "deleted" / (sid + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def size_text(n):
+    """Returns size n in bytes as text: 512 B, 12.3 KB, 4.5 MB."""
+    if n < 1024:
+        return f"{n} B"
+    for unit in ("KB", "MB", "GB"):
+        n /= 1024
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}"
+
+
+def files_stat(sid):
+    """Returns the size of the files of session sid and the time of the
+    latest change of them in Unix seconds: (bytes, mtime); without files —
+    (0, None)."""
+    size, latest = 0, None
+    for p in session_files(sid):
+        try:
+            st = p.stat()
+        except FileNotFoundError:
+            continue
+        size += st.st_size
+        latest = max(latest or 0, st.st_mtime)
+    return size, latest
+
+
+def cmd_sessions(_):
+    current = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    rows = []
+    for sid in stored_ids():
+        size, latest = files_stat(sid)
+        if latest is None:
+            continue
+        s = stored_session(sid)
+        state = ("connected" if s.get("connected") else "disconnected") if read_session(sid) else "closed"
+        rows.append((latest, sid, s.get("label"), state, launch_dir(sid) or s.get("repo"), size))
+    rows.sort()
+    t = time.time()
+    print(f"sessions: {len(rows)}, {size_text(sum(r[5] for r in rows))}")
+    for latest, sid, label, state, where, size in rows:
+        print(f"- {sid} “{label or '—'}” · {state}" + (" · this session" if sid == current else ""))
+        print(f"  directory: {where or 'unknown'}")
+        print(f"  size: {size_text(size)} · last activity: {datetime.fromtimestamp(latest):%Y-%m-%d %H:%M}, "
+              f"{int((t - latest) // 86400)} days ago")
+
+
+def cmd_purge(args):
+    bad = next((x for x in args.ids if not SAFE_ID.match(x)), None)
+    if bad:
+        print(f"invalid session id: {bad}")
+        return 1
+    running = info()
+    if running and running.get("version") != VERSION:
+        print(f"another server version is on port {PORT}: stop it (cm.py stop)")
+        return 1
+    freed, connected = 0, None
+    for sid in args.ids:
+        size, latest = files_stat(sid)
+        label = stored_session(sid).get("label")
+        if latest is None and not (running and sid in running["sessions"]):
+            print(f"- {sid}: no such session")
+            continue
+        if running:
+            connected = call("POST", f"/api/sessions/{sid}/purge", {})["connected"]
+            # Without connected sessions the server stops: the rest is deleted from the disk.
+            if not connected:
+                running = None
+        else:
+            purge_files(sid)
+        freed += size
+        print(f"- {sid} “{label or '—'}”: deleted, {size_text(size)}")
+    print(f"freed: {size_text(freed)}")
+    if connected is not None:
+        print(f"connected sessions: {connected}" + ("; server stopped" if connected == 0 else ""))
+
+
 def cmd_disconnect(args):
     if not args.hook:
         session = need_session(args)
@@ -2082,7 +2259,7 @@ def main():
 
     def cmd(name, *args):
         sp = sub.add_parser(name)
-        if name not in ("serve", "stop"):
+        if name not in ("serve", "stop", "sessions", "purge"):
             sp.add_argument("--session")
         for a in args:
             sp.add_argument(a)
@@ -2116,12 +2293,15 @@ def main():
     a.add_argument("text", nargs="?")
     a.add_argument("--topic")
     cmd("image").add_argument("files", nargs="+")
+    cmd("sessions")
+    cmd("purge").add_argument("ids", nargs="+")
     cmd("disconnect").add_argument("--hook", action="store_true")
     args = p.parse_args()
     handlers = {"serve": cmd_serve, "stop": cmd_stop, "open": cmd_open, "embed": cmd_embed, "wait": cmd_wait,
                 "leave": cmd_leave, "show": cmd_show, "thread": cmd_thread, "reply": cmd_reply,
                 "branch": cmd_branch, "resolve": cmd_resolve, "ask": cmd_ask,
-                "chat": cmd_chat, "activity": cmd_activity, "image": cmd_image, "disconnect": cmd_disconnect}
+                "chat": cmd_chat, "activity": cmd_activity, "image": cmd_image, "sessions": cmd_sessions, "purge": cmd_purge,
+                "disconnect": cmd_disconnect}
     return handlers[args.cmd](args) or 0
 
 

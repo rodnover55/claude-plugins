@@ -1600,6 +1600,11 @@
   function send(ta, path, okMsg, empty, extra) {
     var text = ta ? ta.value.trim() : "";
     if (!text && !empty) return;
+    var why = uploading(text);
+    if (why) {
+      toast(why);
+      return;
+    }
     var key = ta && ta.getAttribute("data-key");
     if (text) {
       ta.value = "";
@@ -1840,19 +1845,152 @@
     quoteTimer = setTimeout(checkQuote, 250);
   });
 
+  // ---- images pasted into fields: uploaded to the session's images, they go
+  // into the text as ![name](address). While an image uploads, the field has
+  // its placeholder, and the text is not sent. The field may be re-rendered
+  // meanwhile: the placeholder is found by the field's key, and without the
+  // field — in its draft.
+
+  // The largest image, as on the server.
+  var IMAGE_MAX = 20 * 1024 * 1024;
+  // The images that are pasted: those the Read tool of Claude shows, and
+  // SVG, which it gives as its code.
+  var IMAGE_TYPES = /^image\/(png|jpeg|gif|webp|svg\+xml)$/;
+  // A placeholder of an image in a text, also of an upload of another tab
+  // or of a page left before the upload ended.
+  var PLACEHOLDER = /!\[Uploading [^\]\n]*…\]\(\)/g;
+  // The placeholders of the images this page is uploading.
+  var uploads = [];
+
+  // Why text cannot be sent because of image placeholders in it: the text
+  // of the toast, or null if it can be sent.
+  function uploading(text) {
+    var found = text.match(PLACEHOLDER) || [];
+    if (!found.length) return null;
+    if (found.every(function (p) { return uploads.indexOf(p) >= 0; })) return "Wait: an image is still uploading";
+    return "The text has the placeholder of an image upload ![Uploading …](): wait for it to end, " +
+      "or if the upload was interrupted, delete the placeholder and paste the image again";
+  }
+
+  // Inserts text at the cursor of field ta as typed, so the draft keeps it.
+  function insertText(ta, text) {
+    if (document.execCommand("insertText", false, text)) return;
+    ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  // Returns text with placeholder replaced by md, and position p of the
+  // text moved with it: {text, at}; without placeholder — null.
+  function replaced(text, placeholder, md, p) {
+    var at = text.indexOf(placeholder), end = at + placeholder.length;
+    if (at < 0) return null;
+    return { text: text.slice(0, at) + md + text.slice(end), at: p >= end ? p + md.length - placeholder.length : p > at ? at + md.length : p };
+  }
+
+  // Replaces placeholder with md in field key, and without the field — in
+  // its draft. In the focused field the replacement is an edit, so Ctrl+Z
+  // keeps working; a pending quote of the field is then undone by the page
+  // itself (see pasted).
+  function replaceUpload(key, placeholder, md) {
+    uploads = uploads.filter(function (p) { return p !== placeholder; });
+    var ta = app.querySelector('textarea[data-key="' + key + '"]');
+    var at = ta ? ta.value.indexOf(placeholder) : -1;
+    if (at >= 0) {
+      var s = replaced(ta.value, placeholder, md, ta.selectionStart).at;
+      var e = replaced(ta.value, placeholder, md, ta.selectionEnd).at;
+      var edited = false;
+      pasting = true;
+      try {
+        if (document.activeElement === ta) {
+          ta.setSelectionRange(at, at + placeholder.length);
+          edited = document.execCommand(md ? "insertText" : "delete", false, md);
+        }
+        if (!edited) {
+          ta.value = ta.value.slice(0, at) + md + ta.value.slice(at + placeholder.length);
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      } finally {
+        pasting = false;
+      }
+      ta.setSelectionRange(s, e);
+      if (pasted && pasted.key === key) {
+        var plain = replaced(pasted.plain.text, placeholder, md, pasted.plain.at);
+        if (plain) pasted.plain = plain;
+        pasted.quoted = ta.value;
+        pasted.ta = null;
+      }
+      return;
+    }
+    var d = loadJson(DRAFTS_KEY, {})[key];
+    at = d ? d.text.indexOf(placeholder) : -1;
+    if (at >= 0) setDraft(key, d.text.slice(0, at) + md + d.text.slice(at + placeholder.length));
+  }
+
+  // Uploads image file to the session; gives its address.
+  function uploadImage(file) {
+    if (file.size > IMAGE_MAX) return Promise.reject(new Error("the image is larger than 20 MB"));
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(String(r.result).slice(String(r.result).indexOf(",") + 1)); };
+      r.onerror = function () { reject(new Error("the image could not be read")); };
+      r.readAsDataURL(file);
+    }).then(function (data) {
+      // Not by request: a request with keepalive carries at most 64 KB.
+      return fetch(API + "/images", {
+        method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: data })
+      });
+    }).then(function (r) {
+      return r.json().then(function (d) {
+        if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+        return d.url;
+      });
+    });
+  }
+
+  // Pastes image files into field ta at the cursor, one per line. A
+  // placeholder is unique across pages and tabs: drafts are shared.
+  function pasteImages(ta, files) {
+    var key = ta.getAttribute("data-key");
+    var items = files.map(function (f) {
+      var name = (f.name || "").replace(/\.[^.]*$/, "").replace(/[\[\]\\\r\n]+/g, " ").trim() || "image";
+      var id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      return { file: f, name: name, placeholder: "![Uploading " + name + " " + id + "…]()" };
+    });
+    uploads = uploads.concat(items.map(function (x) { return x.placeholder; }));
+    insertText(ta, items.map(function (x) { return x.placeholder; }).join("\n"));
+    items.forEach(function (x) {
+      uploadImage(x.file).then(function (url) {
+        replaceUpload(key, x.placeholder, "![" + x.name + "](" + url + ")");
+      }, function (e) {
+        replaceUpload(key, x.placeholder, "");
+        failed(e);
+      });
+    });
+  }
+
   // Text pasted into a field goes in as a quote. The first Ctrl+Z (Cmd+Z)
   // leaves the text as it was pasted, and the next one takes it away.
   // pasted is the field's last paste with the field's text as pasted and
   // with the quote. A re-rendered field has lost its history, and then
   // Ctrl+Z puts the text as pasted back itself. Other editing of the field
   // drops pasted, and pasting is set while the paste itself edits the field.
+  // Images of the clipboard are pasted only without text: cells of a table
+  // come with their picture and go in as text.
   var pasted = null, pasting = false;
 
   document.addEventListener("paste", function (e) {
     var ta = e.target;
     if (ta.tagName !== "TEXTAREA" || !app.contains(ta) || !e.clipboardData) return;
     var text = e.clipboardData.getData("text/plain").replace(/\r\n?/g, "\n");
-    if (!text.trim()) return;
+    if (!text.trim()) {
+      var files = Array.prototype.filter.call(e.clipboardData.files || [], function (f) { return /^image\//.test(f.type); });
+      var images = files.filter(function (f) { return IMAGE_TYPES.test(f.type); });
+      if (files.length) e.preventDefault();
+      if (images.length) pasteImages(ta, images);
+      if (images.length < files.length) toast("Only PNG, JPEG, GIF, WebP and SVG images are pasted: Claude can read only them");
+      return;
+    }
     pasting = true;
     try {
       if (!document.execCommand("insertText", false, text)) return;
@@ -2015,7 +2153,7 @@
     diff = window.LiveCommentsDiff({
       SID: SID, API: API, app: app, make: make, button: button, toast: toast, failed: failed,
       request: request, post: post, render: render, titleOf: titleOf, status: status, unseenOf: unseenOf,
-      draft: function (key) { return drafts[key] || null; }, setDraft: setDraft,
+      draft: function (key) { return drafts[key] || null; }, setDraft: setDraft, uploading: uploading,
       bodyEl: bodyEl, linesText: linesText,
       topics: function () { return st ? st.topics : []; }
     });

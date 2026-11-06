@@ -1040,6 +1040,11 @@
           var ta = lc.app.querySelector('textarea[data-key="diffnew"]');
           var text = ta ? ta.value.trim() : "";
           if (!text || !draft) return;
+          var why = lc.uploading(text);
+          if (why) {
+            lc.toast(why);
+            return;
+          }
           var anchor = draft;
           draft = null;
           ta.value = "";
