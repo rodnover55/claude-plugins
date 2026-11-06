@@ -310,13 +310,13 @@
     return s.length > n ? s.slice(0, n - 1) + "…" : s;
   }
 
-  // The highlight state by its topics: waiting for Claude, answered, resolved, declined.
+  // The highlight state by its topics: waiting for Claude, answered, resolved, closed.
   function groupState(g) {
     var ts = g.tids.map(find).filter(Boolean);
     if (ts.some(function (t) { return st.queue.indexOf(t.id) >= 0 || (st.working && st.working.tid === t.id); })) return "waiting";
     if (ts.some(function (t) { return t.state === "open"; })) return "answered";
     if (ts.some(function (t) { return t.state === "resolved"; })) return "resolved";
-    return "declined";
+    return "closed";
   }
 
   function applyState(next) {

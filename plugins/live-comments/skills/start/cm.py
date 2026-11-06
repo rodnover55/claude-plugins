@@ -31,11 +31,16 @@ The default session is CLAUDE_CODE_SESSION_ID.
                                 --working — Claude keeps working on the topic
                                 after this reply
     cm.py branch ID -f FILE [--message MID] [--title TEXT]
-                                open two or more subquestions of a topic; MID —
-                                the user message they are taken from;
-                                --title — the topic's question in one line
-    cm.py resolve ID --decision TEXT
-                                record the decision and close the topic
+                                open subquestions of a topic: one or more
+                                questions after the first one — of user
+                                message MID, which still awaits the reply to
+                                the first question, or without MID — raised
+                                by Claude, whose reply in the topic asks the
+                                first one; --title — the topic's question in
+                                one line
+    cm.py resolve ID (--decision TEXT | -f FILE)
+                                record the decision and resolve the topic;
+                                -f — the decision from FILE
     cm.py ask -f FILE           top-level topics on behalf of Claude: questions
                                 the user decides
     cm.py chat -f FILE          top-level topics on behalf of the user: the
@@ -48,8 +53,12 @@ The default session is CLAUDE_CODE_SESSION_ID.
                                 listening"; --topic — also above the reply
                                 field of topic ID; without TEXT — the default
                                 phrases
+    cm.py image FILE...         upload images to the session and print their
+                                addresses for messages; leave deletes them
+                                with the session
     cm.py leave                 close the session: delete its discussion and
-                                print it; the last one stops the server
+                                its images and print it; the last one stops
+                                the server
     cm.py disconnect [--hook]   disconnect the session and keep its discussion;
                                 the last one stops the server; --hook — the
                                 SessionEnd hook: the session from the hook JSON
@@ -63,18 +72,21 @@ The default session is CLAUDE_CODE_SESSION_ID.
 FILE of branch, ask and chat is a JSON list [{"title": question in one line,
 "text": question text}]. All commands except serve and stop accept
 --session ID. Storage: ~/.local/share/live-comments/sessions/<session id>.json
-($XDG_DATA_HOME/live-comments/sessions when XDG_DATA_HOME is set). The
+($XDG_DATA_HOME/live-comments/sessions when XDG_DATA_HOME is set), the
+images of a session in ~/.local/share/live-comments/images/<session id>. The
 fonts of the pages: ~/.config/live-comments/fonts.json ($XDG_CONFIG_HOME
 when set), their files in ~/.local/share/live-comments/fonts; the colors of
 the pages: ~/.config/live-comments/theme.json.
 """
 
 import argparse
+import base64
 import hashlib
 import html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -103,6 +115,14 @@ FONT_ROLES = {"text": "--lc-font", "mono": "--lc-mono"}
 FONT_TYPES = {".woff2": ("font/woff2", "woff2"), ".woff": ("font/woff", "woff"),
               ".ttf": ("font/ttf", "truetype"), ".otf": ("font/otf", "opentype")}
 FONT_FAMILY = re.compile(r'^[^"\\;{}<>\n\r]{1,80}$')
+# The images of each session's messages, uploaded by the image command: deleted with the session.
+IMAGES_DIR = DATA.parent / "images"
+IMAGE_TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+               "avif": "image/avif", "svg": "image/svg+xml"}
+IMAGE_MAX = 20 * 1024 * 1024
+# How many first bytes of a file image_type needs.
+IMAGE_HEAD = 65536
+IMAGE_NAME = re.compile(r"^i[0-9a-f]{1,40}\.(?:png|jpg|gif|webp|avif|svg)$")
 # The user's colors of the pages, the names of the colors of the palette and
 # the CSS values of --lc-scheme for the schemes the theme may force.
 THEME_FILE = statusfeed.BAR_DIR / "theme.json"
@@ -114,11 +134,11 @@ COLOR = re.compile(r"^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,30}|[a-z-]{3,12}\([-\w\s.,%/
 HOST = "127.0.0.1"
 PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
-VERSION = 23
+VERSION = 31
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
-STATE_NAME = {"open": "open", "resolved": "resolved", "declined": "declined"}
+STATE_NAME = {"open": "open", "resolved": "resolved", "closed": "closed"}
 # The line of the embed.js script of a session that embed writes into a page:
 # a script of 127.0.0.1 with data-session, its attributes in any order and on
 # any lines, taking whole lines — a template that trims whitespace may glue it
@@ -180,21 +200,23 @@ def pending(t):
     """Returns what awaits Claude in the open topic t, or None.
 
     Unanswered user messages and a request to record the decision await
-    Claude. Result: tid — the topic; since — the time of the oldest waiting
-    item; questions — ids of unanswered messages; resolve — whether a
-    decision is requested; auto — the request came because all subquestions
-    closed. A closed topic gives None.
+    Claude; the user's decision of Resolve is a part of the request. Result:
+    tid — the topic; since — the time of the oldest waiting item; questions —
+    ids of unanswered messages; resolve — whether the user requested the
+    decision; carryOut — whether an unanswered message was sent by "Reply
+    and carry out now". A resolved or closed topic gives None.
     """
     if t["state"] != "open":
         return None
     done = answered(t)
-    waiting = [m for m in t["messages"] if m["author"] == "user" and m["id"] not in done]
+    waiting = [m for m in t["messages"] if m["author"] == "user" and m.get("kind") != "resolve"
+               and m["id"] not in done]
     req = t.get("resolveRequested")
     if not waiting and not req:
         return None
     since = min([m["created"] for m in waiting] + ([req] if req else []))
     return {"tid": t["id"], "since": since, "questions": [m["id"] for m in waiting],
-            "resolve": bool(req), "auto": bool(req and t.get("resolveAuto"))}
+            "resolve": bool(req), "carryOut": any(m.get("carryOut") for m in waiting)}
 
 
 def open_on_desktop(path):
@@ -256,6 +278,29 @@ def plantuml_svg(source):
     return svg, None
 
 
+def image_type(data):
+    """Returns the extension of IMAGE_TYPES for image bytes data by their
+    signature, or None if data is not such an image."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[4:8] == b"ftyp":
+        # The brands of the ftyp box: the major one and the compatible ones after the version.
+        size = int.from_bytes(data[:4], "big")
+        brands = {data[8:12]} | {data[i:i + 4] for i in range(16, min(size, len(data)), 4)}
+        if brands & {b"avif", b"avis"}:
+            return "avif"
+    head = data[:IMAGE_HEAD].lstrip(b"\xef\xbb\xbf \t\r\n")
+    if head.startswith(b"<") and re.search(rb"<svg[\s>]", head):
+        return "svg"
+    return None
+
+
 # ---------------------------------------------------------------- storage
 
 def write_session(s):
@@ -273,6 +318,39 @@ def read_session(sid):
         return json.loads((DATA / (sid + ".json")).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+
+
+def upgrade_session(s):
+    """Brings session s read from a file of an earlier version to the current
+    one and returns it. Earlier versions requested the parent's decision by
+    themselves when its last open subquestion was resolved or closed
+    (resolveAuto): such a request is not the user's Resolve and is dropped.
+    The "declined" state of earlier versions is the "closed" state. A closed
+    topic of earlier versions keeps no decision. An open topic with a
+    recorded decision of earlier versions is resolved, and the message about
+    its decision comes into its parent's discussion."""
+    topics = s.get("topics") or []
+    for t in topics + [x for a in s.get("applied") or [] for x in a.get("topics") or []]:
+        if t.pop("resolveAuto", False):
+            t["resolveRequested"] = None
+        if t.get("state") == "declined":
+            t["state"] = "closed"
+        if t.get("state") == "closed":
+            t["decision"] = None
+    for t in topics:
+        if t.get("state") == "open" and t.get("decision"):
+            t.update(state="resolved", closed=t.get("updated") or now(), resolveRequested=None, inWork=False)
+            p = Store.topic(s, t["parent"]) if t["parent"] else None
+            if p and not any(m.get("kind") == "subdecision" and m.get("topic") == t["id"] and not m.get("revoked")
+                             for m in p["messages"]):
+                p["messages"].append(subdecision(t))
+    return s
+
+
+def subdecision(t):
+    """Returns the message about the decision of resolved topic t for its parent's discussion."""
+    return {"id": new_id("m"), "author": "claude", "kind": "subdecision", "topic": t["id"], "created": now(),
+            "answers": [], "text": f"Subquestion “{title_of(t)}” resolved: {t['decision']}"}
 
 
 class Store:
@@ -296,15 +374,16 @@ class Store:
         self.status = {}
         DATA.mkdir(parents=True, exist_ok=True)
         for f in DATA.glob("*.json"):
-            s = json.loads(f.read_text(encoding="utf-8"))
+            s = upgrade_session(json.loads(f.read_text(encoding="utf-8")))
             self.sessions[s["session"]] = s
 
     def delete(self, sid):
         """Deletes session sid and wakes those waiting: their requests to the
         session get a 410 response. The session file moves to deleted/, from
         where wait or leave of the session returns the closed_report to
-        Claude and erases the file. Auto-apply of the session, on or off, is
-        kept in KEPT_AUTO_APPLY: the next open of the session takes it."""
+        Claude and erases the file. The images of the session are deleted.
+        Auto-apply of the session, on or off, is kept in KEPT_AUTO_APPLY:
+        the next open of the session takes it."""
         s = self.sessions.pop(sid, None)
         self.working.pop(sid, None)
         self.status.pop(sid, None)
@@ -316,6 +395,7 @@ class Store:
         if path.exists():
             (DATA / "deleted").mkdir(exist_ok=True)
             path.replace(DATA / "deleted" / path.name)
+        shutil.rmtree(IMAGES_DIR / sid, ignore_errors=True)
         self.cond.notify_all()
 
     def missing(self, sid):
@@ -338,57 +418,38 @@ class Store:
         return [t for t in s["topics"] if t["parent"] == tid]
 
     def queue(self, s):
-        """Returns the tasks of session s from pending, the oldest first."""
-        return sorted(filter(None, map(pending, s["topics"])), key=lambda p: p["since"])
+        """Returns the tasks of session s from pending: the tasks of "Reply
+        and carry out now" first, and among them and among the others the
+        oldest first."""
+        return sorted(filter(None, map(pending, s["topics"])), key=lambda p: (not p["carryOut"], p["since"]))
 
     def public(self, s):
         sid = s["session"]
         w = self.working.get(sid)
         return {**s, "applied": len(s.get("applied") or []), "queue": [p["tid"] for p in self.queue(s)],
-                "working": {"tid": w["tid"], "resolve": w["resolve"]} if w else None,
+                "working": {"tid": w["tid"], "resolve": w["resolve"], "carryOut": w.get("carryOut", False)}
+                if w else None,
                 "listening": self.listening.get(sid, 0) > 0, "status": self.status.get(sid), "now": now()}
 
-    def request_parent_resolve(self, s, t):
-        """Requests the decision of topic t's parent if all of the parent's
-        subquestions are closed and at least one of them is resolved. Returns
-        the parent's id if the request is made, otherwise None."""
-        p = self.topic(s, t["parent"]) if t["parent"] else None
-        if not p or p["state"] != "open" or p.get("resolveRequested"):
-            return None
-        kids = self.children(s, p["id"])
-        if any(k["state"] == "open" for k in kids) or not any(k["state"] == "resolved" for k in kids):
-            return None
-        p.update(resolveRequested=now(), resolveAuto=True, updated=now())
-        return p["id"]
-
-    def decline(self, s, t):
-        """Closes topic t and all its open subquestions as declined."""
-        t.update(state="declined", closed=now(), updated=now(), resolveRequested=None, resolveAuto=False,
-                 inWork=False)
+    def close(self, t):
+        """Closes topic t without a decision; its subquestions stay as they are."""
+        t.update(state="closed", closed=now(), updated=now(), resolveRequested=None, inWork=False)
         for sid, w in list(self.working.items()):
             if w["tid"] == t["id"]:
                 del self.working[sid]
-        for k in self.children(s, t["id"]):
-            if k["state"] == "open":
-                self.decline(s, k)
 
     def apply(self, s, auto=False):
-        """"Apply resolved": removes resolved and declined topics from the
-        discussion and queues them for Claude to carry out the plan; open
-        topics stay. Decisions of removed subquestions in the discussion of
-        an open parent are marked applied. auto — applied by auto-apply.
-        Returns the number of applied decisions; without resolved topics
+        """"Apply resolved": removes the finished branches from the discussion
+        and queues them for Claude to carry out the plan; branches with open
+        topics stay whole. auto — applied by auto-apply. Returns the number
+        of applied decisions; without resolved topics in finished branches
         changes nothing and returns 0. Does not save the session."""
-        done = [t for t in s["topics"] if t["state"] != "open"]
+        done = finished(s["topics"])
         n = sum(t["state"] == "resolved" for t in done)
         if not n:
             return 0
         ids = {t["id"] for t in done}
         s["topics"] = [t for t in s["topics"] if t["id"] not in ids]
-        for t in s["topics"]:
-            for m in t["messages"]:
-                if m.get("kind") == "subdecision" and m.get("topic") in ids and not m.get("revoked"):
-                    m["applied"] = True
         s.setdefault("applied", []).append({"id": new_id("a"), "created": now(), "auto": auto, "topics": done})
         return n
 
@@ -404,10 +465,14 @@ class Store:
 
 
 def new_topic(parent, author, text, anchor=None, title="", created=None):
+    """Returns a new open topic with the first message text. A topic is
+    open, resolved or closed: closed without a decision. Each topic changes
+    its state only by an action on it, whatever the states of its parent and
+    its subquestions."""
     created = created or now()
     return {"id": new_id("t"), "parent": parent, "title": title, "anchor": anchor,
             "created": created, "updated": created, "state": "open", "closed": None,
-            "resolveRequested": None, "resolveAuto": False, "decision": None,
+            "resolveRequested": None, "decision": None,
             "messages": [{"id": new_id("m"), "author": author, "text": text, "created": created}]}
 
 
@@ -859,6 +924,9 @@ def make_handler(store, feed):
             if len(parts) >= 2 and parts[1] == "git":
                 self.git_get(parts[0], parts[2:], q)
                 return
+            if len(parts) == 3 and parts[1] == "images":
+                self.image_get(parts[0], parts[2])
+                return
             if len(parts) != 2:
                 self.fail("no such request", 404)
                 return
@@ -926,6 +994,30 @@ def make_handler(store, feed):
                 self.send_json({"task": task, "queue": len(tasks), "topics": s["topics"]})
             else:
                 self.send_json({"task": None})
+
+        def image_get(self, sid, name):
+            """An image of the session's messages. The name never changes its
+            bytes, so the browser keeps it: the pages are rebuilt on every
+            update. Scripts of an SVG opened by its address do not run."""
+            with store.cond:
+                missing = None if sid in store.sessions else store.missing(sid)
+            path = IMAGES_DIR / sid / name
+            if missing or not IMAGE_NAME.match(name) or not path.is_file():
+                self.send_bytes("No such image".encode("utf-8"), "text/plain; charset=utf-8", 404)
+                return
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", IMAGE_TYPES[name.rsplit(".", 1)[1]])
+            self.send_header("Cache-Control", "private, max-age=31536000, immutable")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; sandbox")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def repo_of(self, sid):
             """Returns the git repository of session sid; if there is none,
@@ -1012,6 +1104,9 @@ def make_handler(store, feed):
                 return
             if parts == ["api", "plantuml"]:
                 self.plantuml(data)
+                return
+            if len(parts) == 3 and parts[0] == "api" and parts[2] == "images":
+                self.add_image(parts[1], data)
                 return
             with store.cond:
                 if parts == ["api", "sessions"]:
@@ -1143,14 +1238,14 @@ def make_handler(store, feed):
 
         def apply_session(self, sid):
             """The "Apply resolved" button: Store.apply; at least one resolved
-            topic is needed."""
+            topic in a finished branch is needed."""
             s = store.sessions.get(sid)
             if not s:
                 self.fail(*store.missing(sid))
                 return
             n = store.apply(s)
             if not n:
-                self.fail("no resolved questions — nothing to apply", 409)
+                self.fail("no resolved questions in branches without open ones — nothing to apply", 409)
                 return
             store.save(s)
             self.send_json({"applied": n, "left": len(s["topics"]), "listening": store.listening.get(sid, 0) > 0})
@@ -1206,6 +1301,37 @@ def make_handler(store, feed):
             store.save(s)
             self.send_json({"activity": s["activity"]})
 
+        def add_image(self, sid, data):
+            """The image command: {data} — the bytes of a PNG, JPEG, GIF,
+            WebP, AVIF or SVG image of at most IMAGE_MAX in base64. Only
+            cm.py uploads: pages in the browser send Origin. The image lives
+            in the session until leave deletes it with the session. Responds
+            with its address."""
+            if self.headers.get("Origin") is not None:
+                self.fail("images are uploaded only by cm.py image", 403)
+                return
+            try:
+                raw = base64.b64decode(str(data.get("data") or ""), validate=True)
+            except ValueError:
+                raw = b""
+            kind = image_type(raw)
+            if not kind or len(raw) > IMAGE_MAX:
+                self.fail(f"an image is a PNG, JPEG, GIF, WebP, AVIF or SVG file of at most "
+                          f"{IMAGE_MAX // 1024 // 1024} MB", 400)
+                return
+            name = f"{new_id('i')}.{kind}"
+            # Under the lock: leave of the session does not delete its images in the middle of the upload.
+            with store.cond:
+                missing = None if store.sessions.get(sid) else store.missing(sid)
+                if not missing:
+                    folder = IMAGES_DIR / sid
+                    folder.mkdir(parents=True, exist_ok=True)
+                    (folder / name).write_bytes(raw)
+            if missing:
+                self.fail(*missing)
+                return
+            self.send_json({"url": f"{ORIGIN}/api/{sid}/images/{name}"})
+
         def add_topic(self, s, data):
             """A new top-level topic from the user ({text, anchor}) or topics
             from a list of questions ({questions, author}): from Claude, and
@@ -1242,63 +1368,88 @@ def make_handler(store, feed):
         def need_open(self, t):
             if t["state"] == "open":
                 return True
-            self.fail(f"topic closed ({STATE_NAME[t['state']]}) — nothing changed", 409)
+            self.fail(f"topic {STATE_NAME[t['state']]} — nothing changed", 409)
+            return False
+
+        def need_unrequested(self, t):
+            if not self.need_open(t):
+                return False
+            if not t.get("resolveRequested"):
+                return True
+            self.fail("Resolve is requested: the topic waits for Claude to record the decision — nothing changed", 409)
             return False
 
         # ---- user actions
 
         def act_messages(self, s, t, data):
+            """The user's message in the topic. With carryOut — "Reply and
+            carry out now": Claude carries out right away what the message
+            asks or what the discussion came to and answers with the result
+            in the topic, which stays open; the message goes first in the
+            queue, and without text it is "Carry out now"."""
             text = (data.get("text") or "").strip()
+            carry = bool(data.get("carryOut"))
             if not self.need_open(t):
                 return
-            if not text:
+            if not text and not carry:
                 self.fail("empty message", 400)
                 return
-            t["messages"].append({"id": new_id("m"), "author": "user", "text": text, "created": now()})
+            m = {"id": new_id("m"), "author": "user", "text": text or "Carry out now", "created": now()}
+            if carry:
+                m["carryOut"] = True
+            t["messages"].append(m)
             self.done(s, t)
 
         def act_resolve(self, s, t, data):
-            if not self.need_open(t):
+            """The user's request to record the decision of the topic,
+            whatever the states of its subquestions. With text — the user's
+            decision: it comes into the topic as a user message of kind
+            resolve, and Claude phrases the plan item from it."""
+            if not self.need_unrequested(t):
                 return
-            if any(k["state"] == "open" for k in store.children(s, t["id"])):
-                self.fail("the topic has open subquestions", 409)
-                return
-            t.update(resolveRequested=now(), resolveAuto=False)
+            t["resolveRequested"] = now()
+            text = (data.get("text") or "").strip()
+            if text:
+                t["messages"].append({"id": new_id("m"), "author": "user", "kind": "resolve", "text": text,
+                                      "created": t["resolveRequested"]})
             self.done(s, t)
 
-        def act_decline(self, s, t, data):
-            if not self.need_open(t):
+        def act_close(self, s, t, data):
+            """Closes the topic without a decision; unavailable while Resolve
+            is requested."""
+            if not self.need_unrequested(t):
                 return
-            store.decline(s, t)
-            store.request_parent_resolve(s, t)
+            store.close(t)
             self.done(s, t, {"autoApplied": store.auto_apply(s)})
 
+        # The route of Close in earlier versions: pages opened before an update.
+        act_decline = act_close
+
         def act_reopen(self, s, t, data):
-            """Revokes the decision of a resolved topic that has no parent or
-            whose parent is open. The topic is open again; the previous
-            decision in its discussion and in the parent's discussion is
-            marked revoked; a user message about the revocation comes into
-            the topic and awaits Claude's reply. The request to record the
-            parent's decision is withdrawn: it has an open subquestion again."""
-            if t["state"] != "resolved":
-                self.fail(f"only a resolved topic can be reopened, this one is {STATE_NAME[t['state']]}", 409)
+            """Opens a resolved or closed topic again, whatever the state of
+            its parent. For a resolved topic the previous decision in its
+            discussion and in the parent's discussion is marked revoked, and
+            the user message "Decision revoked" comes into the topic; for a
+            closed topic the user message "Reopened" comes into it. The
+            message awaits Claude's reply."""
+            if t["state"] == "open":
+                self.fail("only a resolved or closed question can be reopened, this one is open", 409)
+                return
+            if t["state"] == "closed":
+                t["messages"].append({"id": new_id("m"), "author": "user", "kind": "reopened", "created": now(),
+                                      "text": "Reopened"})
+                t.update(state="open", decision=None, closed=None)
+                self.done(s, t)
                 return
             p = store.topic(s, t["parent"]) if t["parent"] else None
-            if p and p["state"] != "open":
-                why = "is resolved: reopen it first" if p["state"] == "resolved" else "is declined"
-                self.fail(f"the question one level up “{title_of(p)}” {why}", 409)
-                return
             for m in t["messages"]:
-                if m.get("kind") == "decision":
+                if m.get("kind") in ("decision", "resolve"):
                     m["revoked"] = True
             if p:
                 for m in p["messages"]:
                     if m.get("kind") == "subdecision" and m.get("topic") == t["id"] and not m.get("revoked"):
                         m.update(revoked=True, decision=t["decision"])
-                p.update(resolveRequested=None, resolveAuto=False, updated=now())
-                for sid, w in list(store.working.items()):
-                    if w["tid"] == p["id"] and w["resolve"]:
-                        del store.working[sid]
+                p["updated"] = now()
             t["messages"].append({"id": new_id("m"), "author": "user", "kind": "reopen", "created": now(),
                                   "text": f"Decision revoked: {t['decision']}"})
             t.update(state="open", decision=None, closed=None)
@@ -1310,8 +1461,7 @@ def make_handler(store, feed):
             """Claude's reply. Answers the messages of the session's current
             work, and if the topic is a different one, all unanswered ones; a
             followup answers nothing. With working the topic stays in Claude's
-            work until its next reply without working, a decision or a
-            decline."""
+            work until its next reply without working, a decision or Close."""
             if not self.need_open(t):
                 return
             sid = s["session"]
@@ -1336,45 +1486,46 @@ def make_handler(store, feed):
             self.done(s, t)
 
         def act_decision(self, s, t, data):
+            """Records the decision and resolves the topic, whatever the
+            states of its subquestions. The message about the decision comes
+            into the parent's discussion, whatever the parent's state."""
             decision = (data.get("decision") or "").strip()
             if not decision:
                 self.fail("empty decision", 400)
                 return
             if not self.need_open(t):
                 return
-            if any(k["state"] == "open" for k in store.children(s, t["id"])):
-                self.fail("the topic has open subquestions", 409)
-                return
             t["messages"].append({"id": new_id("m"), "author": "claude", "kind": "decision", "text": decision,
                                   "created": now(), "answers": (pending(t) or {}).get("questions", [])})
-            t.update(state="resolved", decision=decision, closed=now(), resolveRequested=None, resolveAuto=False,
-                     inWork=False)
+            t.update(state="resolved", decision=decision, closed=now(), resolveRequested=None, inWork=False)
             for sid, w in list(store.working.items()):
                 if w["tid"] == t["id"]:
                     del store.working[sid]
             parent = store.topic(s, t["parent"]) if t["parent"] else None
             if parent:
-                parent["messages"].append({"id": new_id("m"), "author": "claude", "kind": "subdecision",
-                                           "topic": t["id"], "created": now(), "answers": [],
-                                           "text": f"Subquestion “{title_of(t)}” resolved: {decision}"})
+                parent["messages"].append(subdecision(t))
                 parent["updated"] = now()
-            parent_resolve = store.request_parent_resolve(s, t)
-            self.done(s, t, {"parentResolve": parent_resolve, "autoApplied": store.auto_apply(s)})
+            self.done(s, t, {"autoApplied": store.auto_apply(s)})
 
         def act_branch(self, s, t, data):
-            """Opens two or more subquestions of a topic. With message — the
-            questions are taken from this user message: subquestions on the
-            user's behalf, and the message counts as answered. Without
-            message — Claude raised the questions. With title — sets the
-            topic's question in one line."""
+            """Opens subquestions of a topic: one or more questions after the
+            first one, which stays in the topic itself. With message — the
+            questions of this user message: subquestions on the user's behalf;
+            the message is not answered by them and awaits Claude's reply to
+            its first question in the topic. Without message — questions
+            raised by Claude, whose reply in the topic asks the first one:
+            subquestions on Claude's behalf that wait for the user's reply.
+            With title — sets the topic's question in one line."""
             qs = questions_of(data)
-            if not qs or len(qs) < 2:
-                self.fail("a list of two or more questions with title and text is required; "
-                          "answer a single new question in the topic itself", 400)
+            mid = data.get("message")
+            if not qs:
+                self.fail("a list of one or more questions with title and text is required: the questions after "
+                          "the first one, which stays in the topic itself — with message, the first question of "
+                          "the message is answered in the topic; without message, Claude's reply in the topic "
+                          "asks the first raised question", 400)
                 return
             if not self.need_open(t):
                 return
-            mid = data.get("message")
             if mid and not any(m["id"] == mid and m["author"] == "user" for m in t["messages"]):
                 self.fail(f"the topic has no user message {mid}", 404)
                 return
@@ -1383,7 +1534,7 @@ def make_handler(store, feed):
             if data.get("title"):
                 t["title"] = data["title"]
             t["messages"].append({"id": new_id("m"), "author": "claude", "kind": "branch", "created": now(),
-                                  "answers": [mid] if mid else [], "topics": [x["id"] for x in made],
+                                  "answers": [], "topics": [x["id"] for x in made],
                                   "text": "Subquestions: " + "; ".join(f"“{x['title']}”" for x in made)})
             work = store.working.get(s["session"])
             if work and work["tid"] == t["id"] and not work["resolve"] and set(work["questions"]) <= answered(t):
@@ -1537,12 +1688,15 @@ def format_topic(topics, t, task=None, hints=True):
     if t["state"] == "resolved":
         out.append(f"decision: {t['decision']}")
     kinds = {"decision": " · decision", "subdecision": " · subquestion decision", "branch": " · subquestions",
-             "reopen": " · decision revoked"}
+             "reopen": " · decision revoked", "reopened": " · reopened", "resolve": " · decision with Resolve"}
     for m in t["messages"]:
         who = "Claude" if m["author"] == "claude" else "User"
         kind = kinds.get(m.get("kind"), "") + (" (revoked)" if m.get("revoked") else "") + \
             (" (applied)" if m.get("applied") else "")
-        mark = "  ← AWAITING REPLY" if task and m["id"] in task["questions"] else ""
+        if m.get("carryOut"):
+            kind += " · carry out now"
+        mark = ("  ← AWAITING REPLY · CARRY OUT NOW" if m.get("carryOut") else "  ← AWAITING REPLY") \
+            if task and m["id"] in task["questions"] else ""
         out += ["", f"--- {who}{kind} · {m['created']} · {m['id']}{mark}", m["text"]]
     kids = [x for x in topics if x["parent"] == t["id"]]
     if kids:
@@ -1551,9 +1705,26 @@ def format_topic(topics, t, task=None, hints=True):
             out.append(f"- {k['id']} “{title_of(k)}” · {STATE_NAME[k['state']]}" +
                        (f": {k['decision']}" if k["state"] == "resolved" else ""))
     if task and task["resolve"]:
-        why = "all subquestions closed" if task["auto"] else "the user pressed Resolve"
-        out += ["", f"--- {why} · {t['resolveRequested']}  ← RECORD DECISION"]
+        own = next((m for m in t["messages"] if m.get("kind") == "resolve" and m["created"] == t["resolveRequested"]),
+                   None)
+        out += ["", f"--- the user pressed Resolve with the decision below, phrase the plan item from it · "
+                    f"{t['resolveRequested']}  ← RECORD DECISION", own["text"]] if own else \
+            ["", f"--- the user pressed Resolve · {t['resolveRequested']}  ← RECORD DECISION"]
     return "\n".join(out)
+
+
+def finished(topics):
+    """Returns the topics of the finished branches of topics in topic order.
+    A branch is a top-level topic (see level) with all its subquestions at
+    any depth; it is finished when none of its topics is open."""
+    by = {x["id"]: x for x in topics}
+
+    def root(t):
+        while t["parent"] in by:
+            t = by[t["parent"]]
+        return t["id"]
+    unfinished = {root(x) for x in topics if x["state"] == "open"}
+    return [x for x in topics if root(x) not in unfinished]
 
 
 def level(topics, parent):
@@ -1597,13 +1768,13 @@ def format_apply(res):
     """Returns the text for Claude about applying the resolved ones — by the
     "Apply resolved" button or by auto-apply — from the next response: the
     order to carry out the plan, the plan from the decisions of the removed
-    topics and every removed topic in full."""
+    branches and every removed topic in full."""
     done = res["apply"]["topics"]
     why = ("No open questions are left, and auto-apply, turned on by the user in the "
            "“Apply resolved” menu, fired" if res["apply"].get("auto") else "The user pressed “Apply resolved”")
     return "\n".join([f"{why} in the discussion “{res.get('label')}”: carry out the plan. "
-                      "Resolved and declined questions are removed from the discussion; below is their only copy. "
-                      "Open questions stay in the discussion; the session is connected.",
+                      "Branches whose questions are all resolved or closed are removed from the discussion; below is "
+                      "their only copy. Branches with open questions stay in the discussion; the session is connected.",
                       "", "plan:", *format_plan(plan_of(done)), "", "removed questions:",
                       *dump(done, res["topics"])])
 
@@ -1640,7 +1811,8 @@ def closed_report(session):
     path = DATA / "deleted" / (session + ".json")
     if not path.exists():
         return None
-    text = format_session(json.loads(path.read_text(encoding="utf-8")), "the session was closed by leave")
+    text = format_session(upgrade_session(json.loads(path.read_text(encoding="utf-8"))),
+                          "the session was closed by leave")
     path.unlink()
     return text
 
@@ -1799,10 +1971,9 @@ def cmd_chat(args):
 
 
 def cmd_resolve(args):
-    t = call("POST", f"/api/{need_session(args)}/topics/{args.id}/decision", {"decision": args.decision})
+    decision = args.decision if args.file is None else Path(args.file).read_text(encoding="utf-8")
+    t = call("POST", f"/api/{need_session(args)}/topics/{args.id}/decision", {"decision": decision})
     print(f"topic {t['id']} resolved: {t['decision']}")
-    if t.get("parentResolve"):
-        print(f"all subquestions of topic {t['parentResolve']} are closed: wait will give it for recording the decision")
     if t.get("autoApplied"):
         print("no open questions are left: auto-apply, turned on by the user, applied the resolved ones; "
               "wait will give the plan")
@@ -1844,6 +2015,26 @@ def cmd_activity(args):
     a = res["activity"]
     print(f"activity: {a['text']}" + (f" (topic {a['topic']})" if a.get("topic") else "") if a
           else "activity cleared: the pages show the default phrases")
+
+
+def cmd_image(args):
+    session = need_session(args)
+    files = [Path(f).expanduser().resolve() for f in args.files]
+    for f in files:
+        if not f.is_file():
+            print(f"no file {f}")
+            return 1
+        if f.stat().st_size > IMAGE_MAX:
+            print(f"the image is larger than {IMAGE_MAX // 1024 // 1024} MB: {f}")
+            return 1
+        with open(f, "rb") as h:
+            if not image_type(h.read(IMAGE_HEAD)):
+                print(f"not a PNG, JPEG, GIF, WebP, AVIF or SVG image: {f}")
+                return 1
+    print("images:")
+    for f in files:
+        res = call("POST", f"/api/{session}/images", {"data": base64.b64encode(f.read_bytes()).decode("ascii")})
+        print(f"- {f}: {res['url']}")
 
 
 def cmd_leave(args):
@@ -1916,18 +2107,21 @@ def main():
     b.add_argument("-f", "--file", required=True)
     b.add_argument("--message")
     b.add_argument("--title")
-    cmd("resolve", "id").add_argument("--decision", required=True)
+    d = cmd("resolve", "id").add_mutually_exclusive_group(required=True)
+    d.add_argument("--decision")
+    d.add_argument("-f", "--file")
     cmd("ask").add_argument("-f", "--file", required=True)
     cmd("chat").add_argument("-f", "--file", required=True)
     a = cmd("activity")
     a.add_argument("text", nargs="?")
     a.add_argument("--topic")
+    cmd("image").add_argument("files", nargs="+")
     cmd("disconnect").add_argument("--hook", action="store_true")
     args = p.parse_args()
     handlers = {"serve": cmd_serve, "stop": cmd_stop, "open": cmd_open, "embed": cmd_embed, "wait": cmd_wait,
                 "leave": cmd_leave, "show": cmd_show, "thread": cmd_thread, "reply": cmd_reply,
                 "branch": cmd_branch, "resolve": cmd_resolve, "ask": cmd_ask,
-                "chat": cmd_chat, "activity": cmd_activity, "disconnect": cmd_disconnect}
+                "chat": cmd_chat, "activity": cmd_activity, "image": cmd_image, "disconnect": cmd_disconnect}
     return handlers[args.cmd](args) or 0
 
 

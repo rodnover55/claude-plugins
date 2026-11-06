@@ -20,7 +20,8 @@
   var kids = {};
   // Expanded branches: topic id → its state at the moment of expanding. Kept
   // in localStorage, so they survive a reload and moving between pages; a
-  // topic that closed after expanding is collapsed again.
+  // topic resolved or closed after expanding is collapsed again once it has
+  // no open subquestions.
   var EXP_KEY = "lc-expanded:" + SID;
   var expanded = loadJson(EXP_KEY, {});
   // Ids of Claude's replies the user has seen.
@@ -43,6 +44,8 @@
   var focusKey = takeFocusKey();
   // Whether the menu of the "Apply resolved" button is open.
   var applyMenu = false;
+  // The topic whose "Reply" menu is open, or null.
+  var replyMenu = null;
   // The session page has had a state without questions where it is the
   // user's turn: the first such question that appears opens by itself.
   var autoOpen = false;
@@ -615,24 +618,28 @@
     var cut = Math.min.apply(null, src.filter(function (l) { return l.trim(); }).map(function (l) {
       return /^ */.exec(l)[0].length;
     }));
+    // A selected indented code block keeps the 4 spaces that make it code.
+    if (first && first === last && first.tagName === "PRE" && !FENCE.test(src[0].slice(cut))) cut -= 4;
     return src.map(function (l) { return l.slice(Math.min(cut, /^ */.exec(l)[0].length)); }).join("\n");
   }
 
   // ---- topics
 
+  // A topic whose parent is not in the session is a top-level one.
   function index() {
     byId = {};
     kids = {};
+    st.topics.forEach(function (t) { byId[t.id] = t; });
     st.topics.forEach(function (t) {
-      byId[t.id] = t;
-      (kids[t.parent || ""] = kids[t.parent || ""] || []).push(t);
+      var p = byId[t.parent] ? t.parent : "";
+      (kids[p] = kids[p] || []).push(t);
     });
   }
 
-  // Open ones on top, resolved and declined at the bottom; within them by creation time.
+  // Unfinished branches on top, finished ones at the bottom; within them by creation time.
   function ordered(list) {
     return (list || []).map(function (t, i) { return [t, i]; }).sort(function (a, b) {
-      var ca = a[0].state === "open" ? 0 : 1, cb = b[0].state === "open" ? 0 : 1;
+      var ca = finishedBranch(a[0]) ? 1 : 0, cb = finishedBranch(b[0]) ? 1 : 0;
       if (ca !== cb) return ca - cb;
       if (a[0].created !== b[0].created) return a[0].created < b[0].created ? -1 : 1;
       return a[1] - b[1];
@@ -659,15 +666,17 @@
 
   // The topic state for a badge: [class, text].
   function status(t) {
-    if (t.state === "declined") return ["declined", "declined"];
+    if (t.state === "closed") return ["closed", "closed"];
     if (t.state === "resolved") return ["resolved", "resolved"];
     if (st.working && st.working.tid === t.id)
-      return ["working", st.working.resolve && t.resolveRequested ? "Claude is recording the decision…" : "Claude is replying…"];
+      return ["working", st.working.carryOut ? "Claude is carrying it out…" :
+        st.working.resolve && t.resolveRequested ? "Claude is recording the decision…" : "Claude is replying…"];
     var qi = st.queue.indexOf(t.id);
     if (qi >= 0) {
       var done = answeredIds(t);
-      var asks = t.messages.some(function (m) { return m.author === "user" && !done[m.id]; });
-      var text = asks ? "awaiting reply" : "awaiting decision";
+      var asks = t.messages.filter(function (m) { return m.author === "user" && m.kind !== "resolve" && !done[m.id]; });
+      var text = asks.some(function (m) { return m.carryOut; }) ? "awaiting carrying out" :
+        asks.length ? "awaiting reply" : "awaiting decision";
       return ["queued", st.queue.length > 1 ? text + " · #" + (qi + 1) + " in queue" : text];
     }
     if (t.inWork) return ["working", "Claude is working on the question…"];
@@ -676,7 +685,7 @@
   }
 
   function isExpanded(t) {
-    return expanded[t.id] === t.state && (kids[t.id] || []).length > 0;
+    return !!expanded[t.id] && (expanded[t.id] === t.state || !finishedBranch(t)) && (kids[t.id] || []).length > 0;
   }
 
   // A Claude reply the user has not seen. Service messages — a decision, a
@@ -686,9 +695,9 @@
     return m.author === "claude" && !m.kind && !seen[m.id];
   }
 
-  // New replies of topic t; a declined topic has none: the question is dropped.
+  // New replies of topic t; a closed topic has none: the question is closed without a decision.
   function unseenOf(t) {
-    return t.state === "declined" ? [] : t.messages.filter(unseen);
+    return t.state === "closed" ? [] : t.messages.filter(unseen);
   }
 
   function unseenIn(t) {
@@ -697,14 +706,15 @@
     return n;
   }
 
+  // Resolve and Close of an open topic: unavailable while Resolve is requested.
   function canResolve(t) {
-    return t.state === "open" && !t.resolveRequested && !openKids(t).length;
+    return t.state === "open" && !t.resolveRequested;
   }
 
-  // The user's turn: the topic is open, has no open subquestions, is not
-  // waiting for Claude and is not in Claude's work.
+  // The user's turn: the topic is open, is not waiting for Claude and is not
+  // in Claude's work, whatever the states of its parent and subquestions.
   function awaitsUser(t) {
-    return t.state === "open" && !openKids(t).length && st.queue.indexOf(t.id) < 0 &&
+    return t.state === "open" && st.queue.indexOf(t.id) < 0 &&
       !(st.working && st.working.tid === t.id) && !t.inWork;
   }
 
@@ -726,9 +736,9 @@
     return unansweredAfter(tid)[0] || null;
   }
 
-  // A decision is revoked from a resolved topic without a parent or with an open parent.
+  // A resolved or closed topic is opened again, whatever the state of its parent.
   function canReopen(t) {
-    return t.state === "resolved" && (!t.parent || (byId[t.parent] && byId[t.parent].state === "open"));
+    return t.state === "resolved" || t.state === "closed";
   }
 
   // ---- drafts
@@ -819,21 +829,24 @@
     return box;
   }
 
-  // Decisions of subquestions nested at any depth; declined ones are left out.
+  // Decisions of subquestions nested at any depth; for an unresolved
+  // subquestion they rise to its level, as in the plan block.
   function subDecisions(t) {
-    var done = ordered(kids[t.id]).filter(function (k) { return k.state === "resolved"; });
-    if (!done.length) return null;
     var ul = make("ul", "lc-subdec");
-    done.forEach(function (k) {
+    (kids[t.id] || []).forEach(function (k) {
+      var deeper = subDecisions(k);
+      if (k.state !== "resolved") {
+        while (deeper && deeper.firstChild) ul.appendChild(deeper.firstChild);
+        return;
+      }
       var li = make("li");
       li.appendChild(link(titleOf(k), k.id, "lc-sublink"));
       li.appendChild(document.createTextNode(" — "));
       li.appendChild(md(k.decision, "lc-inline"));
-      var deeper = subDecisions(k);
       if (deeper) li.appendChild(deeper);
       ul.appendChild(li);
     });
-    return ul;
+    return ul.firstChild ? ul : null;
   }
 
   function messageEl(t, m) {
@@ -843,13 +856,14 @@
       (m.revoked ? " lc-revoked" : ""));
     el.setAttribute("data-key", "m:" + m.id);
     if (claude) el.setAttribute("data-mid", m.id);
-    var who = make("div", "lc-who", !claude ? "You" :
+    var who = make("div", "lc-who", !claude ? (kind === "resolve" ? "Your decision" : "You") :
       kind === "decision" ? "Decision" :
       kind === "subdecision" ? "Subquestion decision" :
       kind === "branch" ? "Subquestions" : "Claude");
     if (m.revoked) who.appendChild(make("span", "lc-revoked-mark", "revoked"));
     if (m.applied) who.appendChild(make("span", "lc-revoked-mark", "applied"));
-    if (claude && !kind && t.state !== "declined" && (unseen(m) || fresh[m.id]))
+    if (m.carryOut) who.appendChild(make("span", "lc-revoked-mark", "carry out now"));
+    if (claude && !kind && t.state !== "closed" && (unseen(m) || fresh[m.id]))
       who.appendChild(make("span", "lc-new", "new"));
     el.appendChild(who);
     if (kind === "branch" && m.topics) {
@@ -874,7 +888,8 @@
   }
 
   // The reply field and buttons of an open topic; inline — under diff lines,
-  // without the "Next unanswered" button.
+  // without the "Next unanswered" button. The arrow of the "Reply" menu:
+  // "Reply and carry out now".
   function replyEl(t, inline) {
     var box = make("div", "lc-replybox");
     var ta = make("textarea", "lc-textarea");
@@ -884,27 +899,38 @@
     ta.setAttribute("data-tid", t.id);
     box.appendChild(ta);
     var row = make("div", "lc-actions");
-    row.appendChild(button("Reply", "reply", "primary"));
-    if (canResolve(t)) row.appendChild(button("Resolve", "resolve", "lc-resolve"));
-    row.appendChild(button("Decline", "decline", "lc-decline"));
+    var split = make("div", "lc-split lc-split-reply");
+    split.appendChild(button("Reply", "reply", "primary"));
+    var more = split.appendChild(button("▾", "reply-menu", "primary lc-split-more"));
+    more.title = "Reply and carry out now";
+    if (replyMenu === t.id) {
+      var menu = make("div", "lc-menu");
+      var item = menu.appendChild(button("Reply and carry out now", "reply-now", "lc-menu-item"));
+      item.appendChild(make("span", "lc-menu-hint",
+        "Claude carries out right away what the message asks, or with an empty field what the discussion came to, and answers with the result in the topic"));
+      split.appendChild(menu);
+    }
+    row.appendChild(split);
+    if (canResolve(t)) {
+      var res = row.appendChild(button("Resolve", "resolve", "lc-resolve"));
+      res.title = "Claude phrases the decision from the typed text, or from the discussion";
+    }
+    if (canResolve(t)) {
+      var close = row.appendChild(button("Close", "close", "lc-close"));
+      close.title = "Closes the question without a decision";
+    }
     if (!inline) row.appendChild(nextEl());
-    row.appendChild(make("span", "lc-kbd", "Ctrl+Enter — send"));
+    row.appendChild(make("span", "lc-kbd", "Ctrl+Enter — reply"));
     box.appendChild(row);
     return box;
   }
 
-  // Under a resolved topic: the "Reopen" button, and if the parent is
-  // resolved, a hint to reopen the parent first.
+  // Under a resolved or closed topic: the "Reopen" button.
   function reopenEl(t) {
-    if (canReopen(t)) {
-      var row = make("div", "lc-actions lc-replybox");
-      row.appendChild(button("Reopen", "reopen", "lc-reopen"));
-      return row;
-    }
-    var p = t.parent && byId[t.parent];
-    if (t.state === "resolved" && p && p.state === "resolved")
-      return make("p", "lc-hint", "To reopen this question, first reopen the question one level up.");
-    return null;
+    if (!canReopen(t)) return null;
+    var row = make("div", "lc-actions lc-replybox");
+    row.appendChild(button("Reopen", "reopen", "lc-reopen"));
+    return row;
   }
 
   // Badges of a tree row. The discussion is not shown in the tree, so new
@@ -925,10 +951,12 @@
 
   // A topic in the tree: a row with the question; the arrow expands the rows
   // of subquestions, a click on the row opens the topic page with the discussion.
+  // A resolved or closed topic of an unfinished branch looks like an open one.
   function nodeEl(t) {
     var open = isExpanded(t);
     var list = ordered(kids[t.id]);
-    var li = make("li", "lc-node lc-" + t.state + " lc-s-" + status(t)[0]);
+    var li = make("li", "lc-node lc-" + t.state + " lc-s-" + status(t)[0] +
+      (t.state !== "open" && !finishedBranch(t) ? " lc-branch-open" : ""));
     li.setAttribute("data-tid", t.id);
     var row = make("div", "lc-row");
     row.setAttribute("data-key", "row:" + t.id);
@@ -1006,7 +1034,7 @@
   function upHref() {
     if (TOPIC) {
       var up = byId[TOPIC] && byId[TOPIC].parent;
-      return "/" + SID + (up ? "/" + up : "");
+      return "/" + SID + (byId[up] ? "/" + up : "");
     }
     return diff ? "/" + SID : null;
   }
@@ -1084,14 +1112,22 @@
     return a;
   }
 
+  // Whether the branch of topic t is finished: neither t nor any of its
+  // subquestions at any depth is open.
+  function finishedBranch(t) {
+    return t.state !== "open" && (kids[t.id] || []).every(finishedBranch);
+  }
+
   // The "Plan of accepted decisions" block under the tree: decisions of the
-  // session's resolved topics as numbered items in tree order, each with a
-  // "↗" link to its question. Decisions of subquestions are subitems of their
-  // question's decision; for an unresolved question they rise to its level.
+  // resolved topics of finished branches as numbered items in tree order,
+  // each with a "↗" link to its question. Decisions of subquestions are
+  // subitems of their question's decision; for an unresolved question they
+  // rise to its level.
   function planEl() {
     function steps(parent) {
       var ol = make("ol", "lc-plan");
       (kids[parent] || []).forEach(function (t) {
+        if (!parent && !finishedBranch(t)) return;
         var sub = steps(t.id);
         if (t.state !== "resolved") {
           while (sub.firstChild) ol.appendChild(sub.firstChild);
@@ -1115,16 +1151,20 @@
     return box;
   }
 
+  // The number of resolved topics of finished branches.
   function resolvedCount() {
-    return st.topics.filter(function (t) { return t.state === "resolved"; }).length;
+    function count(t) {
+      return (t.state === "resolved" ? 1 : 0) + (kids[t.id] || []).reduce(function (n, k) { return n + count(k); }, 0);
+    }
+    return (kids[""] || []).filter(finishedBranch).reduce(function (n, t) { return n + count(t); }, 0);
   }
 
   function openCount() {
     return st.topics.filter(function (t) { return t.state === "open"; }).length;
   }
 
-  // The "Apply resolved" button, available when at least one question is
-  // resolved, and the arrow of its menu: turn on auto-apply — the resolved
+  // The "Apply resolved" button, available when at least one question of a
+  // finished branch is resolved, and the arrow of its menu: turn on auto-apply — the resolved
   // ones apply by themselves as soon as no open questions are left — or
   // cancel it. Auto-apply belongs to the whole session, and the choice also
   // becomes the auto-apply of new sessions. While auto-apply waits, a badge
@@ -1134,8 +1174,8 @@
     var b = button("Apply resolved", "apply-session", "primary");
     var n = resolvedCount();
     b.disabled = !n;
-    b.title = n ? "Claude will carry out the plan from the resolved questions; resolved and declined questions leave the list"
-      : "No resolved questions";
+    b.title = n ? "Claude will carry out the plan from the branches without open questions; these branches leave the list"
+      : "No resolved questions in branches without open ones";
     var more = button("▾", "apply-menu", "primary lc-split-more");
     more.title = "Auto-apply";
     var open = openCount();
@@ -1458,10 +1498,11 @@
     st = next;
     rev = next.rev;
     index();
-    // Marks of topics that closed after expanding or disappeared are erased.
+    // Marks of topics that disappeared, or were resolved or closed after
+    // expanding and have no open subquestions at any depth, are erased.
     var changed = false;
     Object.keys(expanded).forEach(function (id) {
-      if (!byId[id] || byId[id].state !== expanded[id]) {
+      if (!byId[id] || byId[id].state !== expanded[id] && finishedBranch(byId[id])) {
         delete expanded[id];
         changed = true;
       }
@@ -1553,16 +1594,21 @@
     });
   }
 
-  function send(ta, path, okMsg) {
-    var text = ta.value.trim();
-    if (!text) return;
-    var key = ta.getAttribute("data-key");
-    ta.value = "";
-    fit(ta);
-    setDraft(key, "");
-    post(path, { text: text }).then(function () { toast(okMsg); }, function (e) {
+  // Sends the text of field ta to path; okMsg — the toast after sending. With
+  // empty — also an empty field, and okMsg is then a function of the text.
+  // extra — more fields of the request.
+  function send(ta, path, okMsg, empty, extra) {
+    var text = ta ? ta.value.trim() : "";
+    if (!text && !empty) return;
+    var key = ta && ta.getAttribute("data-key");
+    if (text) {
+      ta.value = "";
+      fit(ta);
+      setDraft(key, "");
+    }
+    post(path, Object.assign({ text: text }, extra)).then(function () { toast(empty ? okMsg(text) : okMsg); }, function (e) {
       // Unsent text returns to the field from the draft.
-      setDraft(key, text);
+      if (text) setDraft(key, text);
       render();
       failed(e);
     });
@@ -1574,13 +1620,13 @@
     return TOPIC;
   }
 
-  // Closes the "Apply resolved" menu without re-rendering the page, so that
-  // the click that closed it reaches its target.
-  function closeApplyMenu() {
-    if (!applyMenu) return;
+  // Closes the menus of the "Apply resolved" and "Reply" buttons without
+  // re-rendering the page, so that the click that closed them reaches its target.
+  function closeMenus() {
+    if (!applyMenu && !replyMenu) return;
     applyMenu = false;
-    var menu = app.querySelector(".lc-menu");
-    if (menu) menu.remove();
+    replyMenu = null;
+    app.querySelectorAll(".lc-menu").forEach(function (menu) { menu.remove(); });
   }
 
   function act(name, node, e) {
@@ -1599,22 +1645,40 @@
       case "reply":
         send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/messages", "Sent to Claude");
         break;
+      case "reply-menu":
+        replyMenu = replyMenu === tid ? null : tid;
+        applyMenu = false;
+        render();
+        break;
+      case "reply-now":
+        closeMenus();
+        send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/messages", function () {
+          return "Claude will carry it out right away and answer in the topic";
+        }, true, { carryOut: true });
+        break;
       case "resolve":
-        post("/topics/" + tid + "/resolve").then(function () { toast("Claude will record the decision and close the topic"); }, failed);
+        send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/resolve", function (text) {
+          return (text ? "Claude will record your decision" : "Claude will record the decision") + " and resolve the topic";
+        }, true);
         break;
       case "reopen":
-        if (!window.confirm("Reopen the question “" + titleOf(t) + "”? The topic opens again, and Claude removes the decision from memory.")) return;
-        post("/topics/" + tid + "/reopen").then(function () { toast("Decision revoked: the topic is open again"); }, failed);
+        var was = t.state;
+        if (!window.confirm("Reopen the question “" + titleOf(t) + "”? The topic opens again" +
+          (was === "resolved" ? ", and Claude removes the decision from memory." : ", and Claude continues its discussion."))) return;
+        post("/topics/" + tid + "/reopen").then(function () {
+          toast(was === "resolved" ? "Decision revoked: the topic is open again" : "Reopened: the topic is open again");
+        }, failed);
         break;
       case "apply-session":
         var n = resolvedCount();
-        if (!window.confirm("Apply resolved? Claude gets the plan from the decisions (" + n + ") and carries it out. Resolved and declined questions leave the list, open ones stay.")) return;
+        if (!window.confirm("Apply resolved? Claude gets the plan from the decisions (" + n + ") of the branches without open questions and carries it out. These branches leave the list, branches with open questions stay.")) return;
         request("/api/sessions/" + encodeURIComponent(SID) + "/apply").then(function (r) {
           toast(r.listening ? "The plan went to Claude for execution" : "The plan waits for Claude: it will be carried out when Claude returns to the discussion");
         }, failed);
         break;
       case "apply-menu":
         applyMenu = !applyMenu;
+        replyMenu = null;
         render();
         break;
       case "auto-apply-on":
@@ -1627,12 +1691,11 @@
             "Auto-apply cancelled; new sessions start without it");
         }, failed);
         break;
-      case "decline":
-        var more = openKids(t).length ? " and its open subquestions" : "";
-        if (!window.confirm("Decline the question “" + titleOf(t) + "”" + more + "? Claude will no longer work on it.")) return;
-        post("/topics/" + tid + "/decline").then(function (r) {
-          toast(r.autoApplied ? "Declined: the question is closed. No open questions left: the resolved ones were applied, the plan went to Claude"
-            : "Declined: the question is closed");
+      case "close":
+        if (!window.confirm("Close the question “" + titleOf(t) + "” without a decision? Claude will no longer work on it.")) return;
+        post("/topics/" + tid + "/close").then(function (r) {
+          toast(r.autoApplied ? "Closed without a decision. No open questions left: the resolved ones were applied, the plan went to Claude"
+            : "Closed without a decision");
         }, failed);
         break;
       default:
@@ -1643,7 +1706,7 @@
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (!t.closest) return;
-    if (!t.closest(".lc-split")) closeApplyMenu();
+    if (!t.closest(".lc-menu, [data-act=apply-menu], [data-act=reply-menu]")) closeMenus();
     var file = t.closest("a[data-file]");
     if (file) {
       e.preventDefault();
@@ -1667,6 +1730,157 @@
     if (text == null || !e.clipboardData) return;
     e.clipboardData.setData("text/plain", text);
     e.preventDefault();
+  });
+
+  // ---- quotes
+
+  // Text as a Markdown quote with "> " before each line and ">" for an empty one.
+  function quoteMd(text) {
+    return text.replace(/^\n+|\s+$/g, "").split("\n").map(function (l) {
+      return l.trim() ? "> " + l : ">";
+    }).join("\n");
+  }
+
+  // Text of selection r inside one code block as a fenced code block in the
+  // block's language, and the lines of a diff quote as a diff block. Null
+  // for a selection outside code blocks.
+  function codeQuote(r, text) {
+    var c = r.commonAncestorContainer;
+    var pre = (c.nodeType === 1 ? c : c.parentNode).closest("pre");
+    if (!pre || !app.contains(pre)) return null;
+    var code = pre.querySelector("code");
+    var lang = pre.classList.contains("lc-dquote") ? "diff" :
+      (/(?:^| )language-(\S+)/.exec(code ? code.className : "") || ["", ""])[1];
+    var fence = "```";
+    while (text.indexOf(fence) >= 0) fence += "`";
+    return fence + lang + "\n" + text.replace(/^\n+|\s+$/g, "") + "\n" + fence;
+  }
+
+  // Puts quote q in place of the selection of focused field ta, a blank line
+  // away from the text before and after it. The browser's editing keeps the
+  // change in the field's history, so Ctrl+Z (Cmd+Z) takes it back.
+  function insertQuote(ta, q) {
+    var before = ta.value.slice(0, ta.selectionStart), after = ta.value.slice(ta.selectionEnd);
+    var text = (!before || /\n\n$/.test(before) ? "" : /\n$/.test(before) ? "\n" : "\n\n") + q +
+      (/^\n\n/.test(after) ? "" : /^\n/.test(after) ? "\n" : "\n\n");
+    if (document.execCommand("insertText", false, text)) return;
+    ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, "end");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  // The reply field of the open topic whose messages or quote hold both ends
+  // of selection r, or null.
+  function quoteField(r) {
+    function part(c) {
+      var el = (c.nodeType === 1 ? c : c.parentNode).closest(".lc-msg, .lc-ctx");
+      return el && app.contains(el) ? el.closest(".lc-body") : null;
+    }
+    var body = part(r.startContainer);
+    if (!body || part(r.endContainer) !== body) return null;
+    return body.querySelector(":scope > .lc-replybox textarea");
+  }
+
+  // The "Quote" button at a selection in a topic's discussion adds the
+  // selection to the topic's reply field as a quote, in Markdown if it is
+  // copied so. quoteText is the selection's text with its line breaks.
+  var quoteBar = null, quoteRange = null, quoteText = "";
+
+  function checkQuote() {
+    var sel = window.getSelection();
+    var r = sel.rangeCount && !sel.isCollapsed && sel.toString().trim() ? sel.getRangeAt(0) : null;
+    quoteRange = r && quoteField(r) ? r.cloneRange() : null;
+    quoteText = quoteRange ? sel.toString() : "";
+    if (!quoteRange) {
+      if (quoteBar) quoteBar.hidden = true;
+      return;
+    }
+    if (!quoteBar) {
+      quoteBar = make("div", "lc-dbar");
+      // Pressing on the button must not clear the selection.
+      quoteBar.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      var b = quoteBar.appendChild(button("Quote", "quote"));
+      b.title = "Adds the selection to the reply field as a quote";
+      b.addEventListener("click", quote);
+      document.body.appendChild(quoteBar);
+    }
+    var rects = quoteRange.getClientRects();
+    var box = rects.length ? rects[rects.length - 1] : quoteRange.getBoundingClientRect();
+    quoteBar.hidden = false;
+    quoteBar.style.top = (box.bottom + window.scrollY + 4) + "px";
+    quoteBar.style.left = Math.max(8, Math.min(box.right + window.scrollX - quoteBar.offsetWidth / 2,
+      window.innerWidth - quoteBar.offsetWidth - 16)) + "px";
+  }
+
+  function quote() {
+    var r = quoteRange, ta = r && quoteField(r);
+    if (!ta) return;
+    var plain = quoteText.replace(/\r\n?/g, "\n");
+    var text = selectedMd(r);
+    if (text == null) text = codeQuote(r, plain);
+    if (text == null) text = plain;
+    var key = ta.getAttribute("data-key");
+    window.getSelection().removeAllRanges();
+    quoteBar.hidden = true;
+    quoteRange = null;
+    // A render put off by the selection goes first, since it replaces the field.
+    if (deferred) render();
+    ta = app.querySelector('textarea[data-key="' + key + '"]');
+    if (!ta) return;
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    insertQuote(ta, quoteMd(text));
+    ta.scrollIntoView({ block: "nearest" });
+  }
+
+  document.addEventListener("mouseup", function () { setTimeout(checkQuote, 0); });
+
+  var quoteTimer = null;
+  document.addEventListener("selectionchange", function () {
+    clearTimeout(quoteTimer);
+    quoteTimer = setTimeout(checkQuote, 250);
+  });
+
+  // Text pasted into a field goes in as a quote. The first Ctrl+Z (Cmd+Z)
+  // leaves the text as it was pasted, and the next one takes it away.
+  // pasted is the field's last paste with the field's text as pasted and
+  // with the quote. A re-rendered field has lost its history, and then
+  // Ctrl+Z puts the text as pasted back itself. Other editing of the field
+  // drops pasted, and pasting is set while the paste itself edits the field.
+  var pasted = null, pasting = false;
+
+  document.addEventListener("paste", function (e) {
+    var ta = e.target;
+    if (ta.tagName !== "TEXTAREA" || !app.contains(ta) || !e.clipboardData) return;
+    var text = e.clipboardData.getData("text/plain").replace(/\r\n?/g, "\n");
+    if (!text.trim()) return;
+    pasting = true;
+    try {
+      if (!document.execCommand("insertText", false, text)) return;
+      e.preventDefault();
+      var plain = { text: ta.value, at: ta.selectionEnd };
+      ta.setSelectionRange(ta.selectionEnd - text.length, ta.selectionEnd);
+      insertQuote(ta, quoteMd(text));
+      pasted = { ta: ta, key: ta.getAttribute("data-key"), plain: plain, quoted: ta.value };
+    } finally {
+      pasting = false;
+    }
+  });
+
+  document.addEventListener("input", function (e) {
+    if (pasted && !pasting && e.target.getAttribute("data-key") === pasted.key) pasted = null;
+  });
+
+  // Z is the letter of the layout if it is Latin, and the physical key otherwise.
+  document.addEventListener("keydown", function (e) {
+    var z = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() === "z" : e.code === "KeyZ";
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || !z || !pasted) return;
+    var p = pasted, ta = document.activeElement;
+    pasted = null;
+    if (!ta || ta === p.ta || ta.getAttribute("data-key") !== p.key || ta.value !== p.quoted) return;
+    e.preventDefault();
+    ta.value = p.plain.text;
+    ta.setSelectionRange(p.plain.at, p.plain.at);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
   // The middle button on a file:// link opens the file the same way.
@@ -1717,7 +1931,8 @@
     if (diff) list.push(["Alt+U", "to the session page, like “← Discussion”"]);
     if (TOPIC || diff) list.push(["Alt+H", "to the session page"]);
     list.push(["Alt+X", "next draft"]);
-    list.push(["Ctrl+Enter", "send the field's text"]);
+    list.push(["Ctrl+Enter", "send the field's text, in a topic like “Reply”"]);
+    list.push(["Ctrl+Z", "right after pasting into a field — the text without the quote"]);
     if (diff) list.push(["Ctrl+P", "file list with search: ↑↓ choose, Enter opens, Esc closes"]);
     list.push(["?", "this help; Esc or a click outside closes it"]);
     return list;
@@ -1758,7 +1973,7 @@
       showKeys(false);
       return;
     }
-    if (e.key === "Escape") closeApplyMenu();
+    if (e.key === "Escape") closeMenus();
     if (!(e.key === "?" || e.code === "Slash" && e.shiftKey) || e.ctrlKey || e.metaKey || e.altKey) return;
     var a = document.activeElement;
     if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.isContentEditable)) return;

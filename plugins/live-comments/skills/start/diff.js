@@ -310,7 +310,7 @@
 
     // A topic's discussion under lines: a row with the question and state,
     // and when expanded — the messages and the reply field. Open topics are
-    // expanded, closed ones collapsed until expanded.
+    // expanded, resolved and closed ones collapsed until expanded.
     function cardEl(t) {
       var open = cardOpen[t.id] != null ? cardOpen[t.id] : t.state === "open";
       var box = make("div", "lc-dcard lc-" + t.state + " lc-s-" + lc.status(t)[0]);

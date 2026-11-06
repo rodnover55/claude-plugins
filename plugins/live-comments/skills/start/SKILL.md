@@ -1,6 +1,6 @@
 ---
 name: start
-description: "Start the live-comments discussion of a Claude Code session: start the live-comments server or connect the session to the running one, and answer the discussion. A live discussion page of the session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session; the server itself serves only the discussion pages. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics; a resolved subtopic leaves its decision in the parent, and the parent resolves when all its subtopics are closed. Decline drops a question with no action. “Apply resolved” hands Claude the plan of resolved questions and removes resolved and declined ones; the session stays. While the session is connected, questions and requests asked in chat become topics instead of chat answers; when no topics are open, a chat message with a single question or request is answered or carried out right away in chat. Otherwise, while the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start or connect a discussion page, or invokes /live-comments:start. To finish the discussion, use the stop skill (/live-comments:stop)."
+description: "Start the live-comments discussion of a Claude Code session: start the live-comments server or connect the session to the running one, and answer the discussion. A live discussion page of the session: a tree of topics, one question per topic, answered by Claude in the same session without page reloads. An HTML page gets a script tag that turns selected fragments into topics of the session. A review page of the session shows git changes like VS Code: the user stages files, hunks or selected lines and asks questions on lines, which become topics. Several questions in a topic message are always split into subtopics. Every topic is resolved or closed only by itself, and a resolved subtopic leaves its decision in the parent. Resolve and Close, which leaves no decision, exclude each other, and Reopen opens either again. “Apply resolved” hands Claude the plan of branches whose topics are all resolved or closed and removes these branches; the session stays. While the session is connected, questions and requests asked in chat become topics instead of chat answers; when no topics are open, a chat message with a single question or request is answered or carried out right away in chat. A topic message sent with “Reply and carry out now” is carried out right away with the result in the topic. Otherwise, while the session is connected, nothing is changed until “Apply resolved”: the discussion collects decisions. Use when the user asks to discuss or comment an HTML page or report live, to start or connect a discussion page, or invokes /live-comments:start. To finish the discussion, use the stop skill (/live-comments:stop)."
 argument-hint: "[path to .html]"
 allowed-tools:
   - Bash(python3 ${CLAUDE_SKILL_DIR}/cm.py *)
@@ -8,23 +8,24 @@ allowed-tools:
 
 # live-comments:start — live discussion of a session
 
-A **topic** is the discussion of one question. Topics form a tree: a question that comes up in the discussion of a topic becomes its **subquestion**, that is, a child topic.
+A **topic** is the discussion of one question. Topics form a tree: when a message in a topic, or Claude's answer in it, has several questions, the first one stays in the topic, and each of the others becomes its **subquestion**, that is, a child topic. A topic is resolved or closed only by an action on it, the same way as a subquestion. Resolving or closing a topic does not change its subquestions, and resolving or closing its subquestions does not change the topic.
 
 - **Server** `cm.py` is one for all sessions: `http://127.0.0.1:8765`. It runs separately from the session and outlives it; it stops when no connected sessions are left (see “End of the Claude Code session”).
-- **Session page** — `http://127.0.0.1:8765/<session id>`. It has nothing but the “New question” field, a forum-like tree of questions, and under it the “Plan of accepted decisions” block: the decisions of all resolved topics as numbered plan items, each with a “↗” link to its question; decisions of subquestions are subitems of their question's decision. A session is not deleted from the page: without questions the page is empty.
+- **Session page** — `http://127.0.0.1:8765/<session id>`. It has nothing but the “New question” field, a forum-like tree of questions, and under it the “Plan of accepted decisions” block: the decisions of the resolved topics of finished branches as numbered plan items, each with a “↗” link to its question; decisions of subquestions are subitems of their question's decision, and for a closed question they rise to its level. A branch is finished when its top-level topic and all its subquestions at any depth are resolved or closed. A session is not deleted from the page: without questions the page is empty.
   - Each topic is one row: the question and its state. The discussion is not in the tree.
-  - By default the tree is collapsed to top-level questions; an arrow expands the rows of subquestions. The page remembers expanded branches in the browser and shows them the same after a reload and after returning from a question page. A closed topic collapses, even if it closed while the page was closed.
-  - Resolved and declined topics stand below open ones at every level of the tree.
+  - By default the tree is collapsed to top-level questions; an arrow expands the rows of subquestions. The page remembers expanded branches in the browser and shows them the same after a reload and after returning from a question page. A resolved or closed topic collapses once none of its subquestions at any depth are open, even if this happened while the page was closed.
+  - Finished branches stand below the others at every level of the tree. A resolved or closed topic with an open subquestion at any depth stands among the open ones and looks like them, with the badge of its state.
   - When no question is the user's turn (as for “Next unanswered”), the first one that becomes the user's turn — Claude has replied — opens by itself. The page waits if it opened with such questions already there, and while the user types in the “New question” field: then the question opens after the text is sent.
   - The “Changes ↗” link in the header is always there and opens the changes page in a new tab.
-  - The “Apply resolved” button is available when at least one question is resolved. It hands Claude, through the output of `wait`, the plan of resolved questions and removes resolved and declined questions from the list; open ones stay (see “Applying”).
+  - The “Apply resolved” button is available when at least one question of a finished branch is resolved. It hands Claude, through the output of `wait`, the plan of finished branches and removes them from the list; branches with open questions stay whole (see “Applying”).
   - The “▾” arrow next to the button opens a menu. “Apply when all questions are resolved” turns on auto-apply: the resolved ones are applied by themselves as soon as no open questions are left. While auto-apply waits, the button has the badge “applies by itself” with the number of open questions, and the menu has “Cancel auto-apply”. Auto-apply belongs to the whole session and stays as chosen until changed: after firing, it waits for the next questions, and after `leave` it carries over to the session's next discussion. The last choice in any session becomes the auto-apply of new sessions; other existing sessions keep theirs.
 - **Topic page** — `http://127.0.0.1:8765/<session id>/<topic id>`; a click on a question row leads to it. It has:
   - the “Back” button — to the question one level up, and for a top-level question — to the session page. Key: Alt+U (in any keyboard layout), including from the reply field; Alt+H opens the session page;
-  - the “Next unanswered” button — above the discussion and last in the “Reply” row; opens the next open question in tree order where it is the user's turn: not resolved, not declined, without open subquestions, not waiting for Claude and not in Claude's work. The number in parentheses on the button is how many such questions there are besides the open one. After the last such question the first one opens; if there are no others, the button is called “Home” and leads to the session page. Key: Alt+N (in any keyboard layout), including from the reply field; on the session page Alt+N opens the first such question;
+  - the “Next unanswered” button — above the discussion and last in the “Reply” row; opens the next open question in tree order where it is the user's turn: not resolved, not closed, not waiting for Claude and not in Claude's work, whatever the states of its parent and subquestions. The number in parentheses on the button is how many such questions there are besides the open one. After the last such question the first one opens; if there are no others, the button is called “Home” and leads to the session page. Key: Alt+N (in any keyboard layout), including from the reply field; on the session page Alt+N opens the first such question;
   - the path from the root to the topic;
   - a quote, if the topic is asked about a fragment of an HTML page;
-  - the discussion and the reply field; subquestions are shown as the same kind of tree in the “Subquestions” message that opened them.
+  - the discussion and the reply field; subquestions are shown as the same kind of tree in the “Subquestions” message that opened them;
+  - the “Quote” button at text selected in the discussion — adds it to the reply field as a quote `>`, in Markdown if whole blocks of one message are selected, and a part of a code block as a code block.
 - **Changes page** — `http://127.0.0.1:8765/<session id>/diff`: a review of the changes of the git repository where `CM open` was run, as in VS Code.
   - The diffs of all files of a group go one under another. The groups are “Changes” (working tree against the index, together with untracked files) and “Staged Changes” (index against HEAD); the group switch is in the toolbar above the diffs. The view is there too: “Side by side” (the default) or “Inline”; the choice is remembered in the browser.
   - The “☰ Files” button and the Ctrl+P key open, in the middle of the window over the diffs, the list of files of both groups as a tree of folders with a search field. The search keeps the files whose paths contain all its words. ↑↓ choose a file or folder, Enter or a click goes to the file's diff or folds the folder, ← and → fold and unfold folders while the field is empty, Esc closes the list. Folded folders are remembered in the browser for the repository; while searching, all folders are unfolded.
@@ -38,14 +39,15 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 - **HTML page** opens as a file (`file://`); the server does not serve it. The session's `embed.js` script is written into it or into its source by the `embed` skill (`/live-comments:embed`).
   - From a selected fragment the script creates a session topic and highlights fragments that have topics.
   - A click on a highlight opens the topic on the server. If a fragment has several topics, a menu to choose from appears first.
-- **Claude's replies** appear on the pages without a reload. New replies are signalled by the “new” badge and a number in the tab title. A recorded decision, “Subquestion … resolved” and a list of subquestions do not count as new: they repeat what is already visible; a declined topic has no “new” marks. While Claude replies, while the question waits for Claude in the queue, or while Claude continues working on the question after a “taking this on” reply, a badge says so on the topic page right above the reply field and in the topic's row in the tree.
+- **Claude's replies** appear on the pages without a reload. New replies are signalled by the “new” badge and a number in the tab title. A recorded decision, “Subquestion … resolved” and a list of subquestions do not count as new: they repeat what is already visible; a closed topic has no “new” marks. While Claude replies, while the question waits for Claude in the queue, or while Claude continues working on the question after a “taking this on” reply, a badge says so on the topic page right above the reply field and in the topic's row in the tree.
 - **Claude's activity**: the header of every discussion page says whether Claude is listening: “● Claude is listening” or “● Claude is not listening now — will answer on return”. Claude replaces this phrase with what it is doing now, and returns it; activity for a topic also stands above the topic's reply field instead of its state badge (see “Activity”).
-- **Buttons of an open topic**: “Reply”, “Resolve” (asks Claude to record the decision) and “Decline”. Resolve is unavailable while the topic has open subquestions. A declined topic is final: no one can reply in it, and the question can be returned to only with a new topic. A resolved topic is opened again with the “Reopen” button (see “Reopening”).
-- **Drafts**: the text in the “New question” field, in a topic's reply field and in a question on lines is saved in the browser right away as a draft shared by the session's tabs. The user can leave a page without losing anything: the text returns to the field when the page opens again; a question on lines also gets its lines back. Sending, and “Cancel” of a question on lines, delete the draft. In the tree, a topic with a reply draft has the “draft” badge.
+- **Buttons of an open topic**: “Reply”, “Resolve” (asks Claude to record the decision, and with text in the reply field to phrase the decision from this text) and “Close” (closes the question without a decision, see “Closing”). The “▾” arrow next to “Reply” opens a menu with “Reply and carry out now”: Claude carries out right away what the message asks, or with an empty field what the discussion came to, and answers with the result in the topic, which stays open (see “Carrying out now”). Resolve and Close are there whatever the states of the subquestions, and they change only this topic. While Resolve waits for Claude, Close is unavailable. A resolved or closed topic has no reply field, no Resolve and no Close, only the “Reopen” button (see “Reopening”).
+- **Drafts**: the text in the “New question” field, in a topic's reply field and in a question on lines is saved in the browser right away as a draft shared by the session's tabs. The user can leave a page without losing anything: the text returns to the field when the page opens again; a question on lines also gets its lines back. Sending, also by “Resolve” and “Reply and carry out now”, and “Cancel” of a question on lines delete the draft. In the tree, a topic with a reply draft has the “draft” badge.
+- **Pasting**: text pasted into any field of the pages goes in as a quote `>`. Ctrl+Z (Cmd+Z on macOS) right after pasting leaves the text without the quote, and the next Ctrl+Z takes the text away.
   - The “Drafts (N)” button in the header and the Alt+X key (in any keyboard layout), including from the reply field, open the page of the next draft in the order they were created, after the last one — the first; the cursor goes to the end of the text. N is how many drafts there are on other pages; without them there is no button.
 - **Status bar**: at the bottom of every discussion page, a bar built by the user's own file of the `statusbar` skill (`/live-comments:statusbar`) — by default the model, context window, rate limits, prompt cache, changed lines and repository. The server builds it once a minute while a page is open, from the session transcript, which has no cost; custom data, such as the status line JSON of Claude Code with the cost, can be sent to `POST /api/<session id>/statusline`. Requests to change the bar go to the `statusbar` skill.
 - **Keyboard help**: the “?” key on any discussion page, except while typing in a field, opens a window with the keys of this page; “?”, Esc or a click outside the window closes it.
-- **Storage** — `~/.local/share/live-comments/sessions/<session id>.json` (`$XDG_DATA_HOME/live-comments/sessions/` when `XDG_DATA_HOME` is set).
+- **Storage** — `~/.local/share/live-comments/sessions/<session id>.json` (`$XDG_DATA_HOME/live-comments/sessions/` when `XDG_DATA_HOME` is set); the images of the session's messages — `~/.local/share/live-comments/images/<session id>/` (`$XDG_DATA_HOME/live-comments/images/<session id>/`), deleted together with the session by `leave`.
 
 `CM` below is `python3 ${CLAUDE_SKILL_DIR}/cm.py`. The commands take the session from `CLAUDE_CODE_SESSION_ID`.
 
@@ -65,16 +67,16 @@ A **topic** is the discussion of one question. Topics form a tree: a question th
 
 ## Decisions only
 
-While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved”, by auto-apply and by a chat message with one item while no topics are open (see “Question in the chat”): not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page or its source (`CM embed`, the `embed` skill) and the decisions file in memory change.
-- A request to change something is not carried out: in a topic, answer that the change will be made by “Apply resolved” and include it in the topic's decision; from the chat, move it into the discussion, unless it is the only item of the message and no topics are open (see “Question in the chat”).
+While the session is connected, the discussion collects decisions. Nothing is changed except by the plan of “Apply resolved”, by auto-apply, by a chat message with one item while no topics are open (see “Question in the chat”) and by a topic message sent with “Reply and carry out now” (see “Carrying out now”): not the code, project files or the HTML page, not settings, not the server — neither on your own initiative nor at the user's request in a topic or in the chat. Only the discussion itself (the `CM` commands), the script line in the HTML page or its source (`CM embed`, the `embed` skill) and the decisions file in memory change.
+- A request to change something is not carried out: in a topic, answer that the change will be made by “Apply resolved” and include it in the topic's decision, unless it came with “Reply and carry out now”; from the chat, move it into the discussion, unless it is the only item of the message and no topics are open (see “Question in the chat”).
 - Reading code and files, gathering information and running checks is allowed: they change nothing.
 
 Carry out the plan of “Apply resolved” right away, even if there are open topics (see “Applying”).
 
 ## Confirmations
 
-Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. The exception is a chat message with one item while no topics are open (see “Question in the chat”). An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
-1. An instruction in a topic is not carried out: it goes into the topic's decision. Reply that it will be done by “Apply resolved” and how it enters the decision; if the questions of the message have already been moved into subquestions, reply as an addition (`CM reply --followup`). An instruction does not count among the questions of the message.
+Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. The exceptions are a chat message with one item while no topics are open (see “Question in the chat”) and a topic message sent with “Reply and carry out now” (see “Carrying out now”). An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
+1. An instruction in a topic is not carried out: it goes into the topic's decision. The exception is an instruction sent with “Reply and carry out now” (see “Carrying out now”). Reply that it will be done by “Apply resolved” and how it enters the decision; if the message also has questions, say so in the same reply that answers its first question. An instruction does not count among the questions of the message.
 2. An instruction from the chat becomes a top-level topic, like a question; if it is the only item of the message and no topics are open, carry it out right away (see “Question in the chat”).
 
 ## Answering a topic
@@ -87,15 +89,19 @@ The output is one topic:
 - messages with ids;
 - subquestions with decisions.
 
-Messages that need an answer are marked `← AWAITING REPLY`. The mark “new” in the first line means the topic has only the user's first message so far. Topics are given out in turn: first the one whose unanswered item came earlier.
+Messages that need an answer are marked `← AWAITING REPLY`, and a message sent with “Reply and carry out now” — `← AWAITING REPLY · CARRY OUT NOW` (see “Carrying out now”). The mark “new” in the first line means the topic has only the user's first message so far. Topics are given out in turn: first the ones with a message of “Reply and carry out now”, and among them and among the others first the one whose unanswered item came earlier.
 
 1. **One topic — one question.** First count the questions in the unanswered message. A question is each item that needs its own answer or its own decision: a question, a clarification, a request to explain in more detail, a request to change something where one has to choose how exactly, an objection. Instructions are not questions (see “Confirmations”). Numbered items and paragraphs about different things are different questions. A clarification of the topic's answer or question counts like any other question. A questions file is a JSON list `[{"title": "<question in one line>", "text": "<the user's words about this question>"}]`.
-   - **A message with two or more questions** — the first message of a new topic or a message in the discussion — move it entirely into subquestions of this topic, one per question: `CM branch <id> -f <file> --message <message id>`. The message counts as answered; the subquestions will come through `wait`. For a new topic add `--title "<the message's overall question in one line>"`.
-   - **Splitting always makes subquestions.** Questions from a message in a topic's thread become its subquestions and are not moved to top-level topics or topics of the same level. Only questions from the chat become top-level topics (see “Question in the chat”).
+   - **A message with two or more questions** — the first message of a new topic or a message in the discussion — the first question stays in this topic, and the others become its subquestions, one per question:
+     1. Write a questions file with the questions after the first one and run `CM branch <id> -f <file> --message <message id>`. The subquestions will come through `wait`. The message still awaits the reply to its first question.
+     2. Answer the first question in the topic right away (steps 2–3 below): `CM reply <id> -f <file>`. For a new topic (the output has the line “no title”) add `--title "<the first question in one line>"`; a topic that already has a title keeps it, so reply without `--title`.
+   - **Splitting always makes subquestions.** The questions after the first one of a message in a topic's thread or of your answer in it become its subquestions and are not moved to top-level topics or topics of the same level. Only questions from the chat become top-level topics (see “Question in the chat”).
    - **A message with one question** — answer it in the topic.
    - **A message without questions**, only with instructions — reply that they go into the topic's decision and will be carried out by “Apply resolved” (see “Confirmations”).
-   - **Your answer raised several questions** that the user decides — open them as subquestions without `--message`: `CM branch <id> -f <file>`. Such subquestions wait for the user's reply.
-2. **Find the answer** the same way as for a question in the chat: read the needed code, files and page. Follow the user's rules for answers (CLAUDE.md, memory): language, style, scope. Answer with words only: change nothing (see “Decisions only”).
+   - **Your answer raised questions** that the user decides — the same way, the first one stays in this topic, and the others become its subquestions, one per question:
+     1. Ask the first raised question in the reply itself (step 3): it stays the topic's open question, and the topic waits for the user's reply.
+     2. Only if more questions were raised: after the reply, write a questions file with the questions after the first one and run `CM branch <id> -f <file>` without `--message`. Such subquestions are asked on Claude's behalf and wait for the user's reply. A single raised question needs no `branch`.
+2. **Find the answer** the same way as for a question in the chat: read the needed code, files and page. Follow the user's rules for answers (CLAUDE.md, memory): language, style, scope. Answer with words only: change nothing (see “Decisions only”), except for a message of “Reply and carry out now” (see “Carrying out now”).
 3. **Send the answer:** write it to a temporary file and run `CM reply <id> -f <file> --title "<question in one line>"`.
    - `--title` is required if the output has the line “no title”. The title is the topic's question in one line; it is visible in the collapsed tree.
    - **Markdown.** Write replies in Markdown wherever it makes them easier to read: the page shows the messages of the user and of Claude as Markdown, like GitHub comments. Headings, paragraphs (a line break stays a break), lists with nesting and tasks `- [ ]`, quotes `>`, code blocks in ```` ``` ````, tables, `code`, **bold**, *italic*, ~~strikethrough~~, links `[text](https://…)`, images and bare addresses all work. Code blocks ```` ```mermaid ```` and ```` ```plantuml ```` (or ```` ```puml ````) are shown as diagrams: Mermaid is drawn in the browser, PlantUML by the local `plantuml` of the server without access to files and network (`!include` of local files does not work; a body without `@startuml` is wrapped in it); the source stays behind the “source” button. Use a diagram where it explains structure or flow better than text. Give code blocks their language (```` ```python ````, ```` ```bash ```` …): the page highlights their syntax. The same goes for decisions (`--decision`) and the `text` of questions files. The title (`--title`, `title`) is plain text. HTML in the text is shown as text.
@@ -107,7 +113,8 @@ Messages that need an answer are marked `← AWAITING REPLY`. The mark “new”
      - a commit, pull request, issue, documentation page or another source the answer relies on — its full `https://` address.
 
      Give only addresses that exist: take them from the output of the `CM` commands, `git remote`, `git log` and the sources you read; do not make them up. The same goes for decisions and the `text` of questions files.
-   - If `reply` answers “topic closed (declined)”, the user declined the question while you were working on it. Send and record nothing.
+   - **Images.** Show an image wherever it shows the answer better than words: a screenshot of a page, a chart, a picture you made. The pages do not show a local image by its `file://` address: upload the file to the session with `CM image <file> [<file> …]`, which prints the address of each image on the server, and put it into the reply as `![what the image shows](address)`. PNG, JPEG, GIF, WebP, AVIF and SVG files of at most 20 MB are uploaded. An image from the internet is given by its `https://` address without uploading. The images stay while the session's discussion stays, also after “Apply resolved” and `disconnect`; `leave` deletes them together with the discussion. The same goes for the `text` of questions files. Uploaded images do not go into decisions (`--decision`): decisions stay in memory after `leave` deletes the images.
+   - If `reply` answers “topic closed”, the user closed the question without a decision while you were working on it. Send and record nothing.
 4. Start `CM wait` in the background again right away.
 
 **Long work** (investigation, a live check) must not hold up the queue:
@@ -115,6 +122,15 @@ Messages that need an answer are marked `← AWAITING REPLY`. The mark “new”
 2. Start `wait` and answer other topics as they come.
 3. Append the result to the same topic: `CM reply <id> -f <file> --followup`. The `--followup` flag means the message adds to the previous answer rather than answering a new question. A reply without `--working` removes the work badge; send an intermediate addition after which the work continues with `--followup --working`. Update the activity as the work moves on; when the work is finished, return the default phrases: `CM activity`.
 4. If the user writes into the topic while it is in work (the first line of the `wait` output is marked “in progress by Claude”) and the work continues after the reply, reply with `--working` too.
+
+## Carrying out now
+
+“Reply and carry out now” in the menu of the “Reply” button is a special case outside “Decisions only”: the user asks to carry out the message right away and to get the result in the same topic. In the `wait` output the message is marked `· carry out now` and `← AWAITING REPLY · CARRY OUT NOW`. Its text is the request; the text “Carry out now” means what the topic's discussion came to: the action Claude proposed last or the user asked for.
+
+1. Carry out right away what the message asks, as without the discussion: change code and files, run commands. Only this message is carried out: the rest of the topic's discussion, other topics and the plan stay under “Decisions only”. If it is not clear what to carry out, carry out nothing and ask in the topic.
+2. Reply in the same topic with the result: what was done and what came out, with links to the changed files (see “Links”). Questions of the message are answered in the same reply by the rules of “Answering a topic”. The topic stays open: record no decision and do not resolve it.
+3. Long work goes as described in “Long work”: reply right away with `--working`, carry out the message, then append the result with `--followup`.
+4. Start `CM wait` in the background again.
 
 ## Question in the chat
 
@@ -133,59 +149,61 @@ Carry out requests about the discussion itself (write the script into a page) in
 
 ## Decision
 
-A decision is recorded in two cases:
-- **The button or subquestions.** The output has the line `← RECORD DECISION` with a reason: “the user pressed Resolve” or “all subquestions closed”. In the second case the server itself requested the decision when the last open subquestion closed, and at least one subquestion is resolved.
-- **The user's words.** An unanswered user message says that the topic's question is resolved, in any words: “resolved”, “let's close this”, “agreed, closing”, “we'll do it that way”. Such a message equals pressing Resolve.
+A decision is recorded in three cases:
+- **The button.** The output has the line `← RECORD DECISION` with the reason “the user pressed Resolve”, also for a topic with open subquestions.
+- **The button with the user's decision.** The user typed text in the reply field and pressed Resolve. The line `← RECORD DECISION` says “the user pressed Resolve with the decision below”, and the user's text follows it; the discussion has the same text in the user message marked `· decision with Resolve`.
+- **The user's words.** An unanswered user message says that the topic's question is resolved, in any words: “resolved”, “agreed”, “decided”, “we'll do it that way”. Such a message equals pressing Resolve.
 
 1. If the topic has other unanswered messages too, first handle them by the rules of “Answering a topic”. Do not reply to the decision message itself separately: recording the decision answers it.
 2. **Phrase the decision as a plan item** in 1–3 sentences: what has to be done — what to change and where, or what to leave as is. Write actions only: not an answer to the topic's question, not a summary of the discussion and not a rationale. The rationale stays in the topic, and the plan item on the session page links to it. Not “The cache needs a 5-minute TTL because the data changes hourly”, but “Set the cache TTL in `config/cache.yml` to 5 minutes”. The item is understandable without the topic's question: it names what exactly to do and where. If the plan is stated in the user's message, take it from there. If there is no explicit plan, write the plan the discussion arrived at.
-   - For a topic with subquestions, the decision is a plan item for its own question; the decisions of the subquestions become its subitems (they are in the output). Do not repeat them word for word.
-   - Declined subquestions are not part of the decision.
+   - **The user's decision** of the button is what was decided: phrase the plan item from it. Keep its meaning: add nothing the user did not decide and drop nothing they did. From the discussion take only what makes the item understandable without the topic: what exactly to do or to leave as is, and where. Not “okay, then via Moonraker”, but “Connect the light to Moonraker as the power device `[power printer_light]`”. A user's decision that is already such a plan item is recorded as it is.
+   - For a topic with subquestions, the decision is a plan item for its own question, also while some of them are open; the decisions of the resolved subquestions become its subitems (they are in the output). Do not repeat them word for word. The open subquestions stay open and are resolved or closed separately.
+   - Closed subquestions are not part of the decision: it neither includes nor excludes what they discussed.
 3. **Remember the decision** in the current project's memory: in the file `decisions-<name>.md` (type `project`) in the memory directory named in the system prompt. If the session has no memory directory, skip this step.
    - The name is the name of the root topic's HTML page without `.html`, and if there is no page — the session label in Latin letters joined with hyphens.
    - A new decision is a line “date · topic path · decision · topic id”.
    - If the file does not exist, create it and add a pointer line to `MEMORY.md`.
-4. **Close the topic:** `CM resolve <id> --decision "<decision>"`.
-   - The topic becomes “resolved” and collapses.
-   - If the topic has a parent, the message “Subquestion “…” resolved: …” comes into the parent's discussion.
-   - If it was the last open subquestion, the command says so, and the parent will come through `wait` for recording its decision.
-   - If the topic has open subquestions, the server does not close it: reply in the topic which subquestions are still open. The topic closes when they close.
+4. **Resolve the topic:** `CM resolve <id> --decision "<decision>"`. A decision with quotes, backticks or several lines goes into a temporary file passed with `-f <file>` instead of `--decision`: the shell changes nothing in it.
+   - The topic becomes “resolved”, also with open subquestions, which stay open.
+   - If the topic has a parent, the message “Subquestion “…” resolved: …” comes into the parent's discussion, whatever the parent's state.
 5. Start `CM wait` in the background again.
 
 ## Reopening
 
-The “Reopen” button on the page of a resolved topic opens it again. The button is there if the topic has no parent or its parent is open; for a resolved parent, the parent has to be reopened first.
-- The previous decision stays in the discussion of the topic and of the parent marked “revoked”.
-- If the parent was waiting for its decision to be recorded, the request is withdrawn: it has an open subquestion again.
-- The user message “Decision revoked: …” comes into the topic; in the `wait` output it is marked `· decision revoked`.
+The “Reopen” button on the page of a resolved or closed topic opens it again, whatever the state of its parent. Its parent and subquestions do not change.
+- For a resolved topic the previous decision stays in the discussion of the topic and of the parent marked “revoked”.
+- For a resolved topic the user message “Decision revoked: …” comes into the topic; in the `wait` output it is marked `· decision revoked`.
+- For a closed topic the user message “Reopened” comes into the topic; in the `wait` output it is marked `· reopened`.
 
-1. Delete the line of this decision from the file `decisions-<name>.md` in memory; the topic id finds the line. If no decisions are left in the file, delete the file and its line in `MEMORY.md`.
-2. Reply in the topic with one line: the decision is revoked and removed from memory. Handle the other unanswered messages of the topic by the rules of “Answering a topic”.
+1. For a resolved topic, delete the line of this decision from the file `decisions-<name>.md` in memory; the topic id finds the line. If no decisions are left in the file, delete the file and its line in `MEMORY.md`. A closed topic has nothing in memory.
+2. Reply in the topic with one line: for a resolved topic, the decision is revoked and removed from memory, and for a closed topic, the topic is open again. Handle the other unanswered messages of the topic by the rules of “Answering a topic”.
 3. Start `CM wait` in the background again.
 
 From then on the topic is discussed and resolved like a regular open one.
 
-## Declining
+## Closing
 
-“Decline” closes the topic and all its open subquestions. Nothing is done for such a topic:
+“Close” closes only this topic, without a decision and without conclusions. Its parent and subquestions do not change. While Resolve waits for Claude, Close is unavailable. A closed topic is opened again with the “Reopen” button (see “Reopening”).
+
+A closed topic only ends its discussion. It is not a rejection of what was discussed in it, not a decision “not to do it” and not an instruction to undo, avoid or drop anything. Nothing is done for the closed topic:
 - `wait` does not give it;
 - a reply to it is not accepted;
-- a decision is written neither into the topic nor into memory.
+- nothing from it enters a decision, the plan or memory;
+- nothing is changed or undone because of it, also when carrying out the plan.
 
 If you were working on it at that moment, drop the work and start `wait`.
 
 ## Applying
 
-The “Apply resolved” button removes all resolved and declined topics from the discussion, at any level of the tree. Open topics stay, and the session stays connected. The decision of a removed subquestion in the discussion of its open parent is marked “applied”. The `wait` output starts with an order to carry out the plan, followed by the plan and the removed topics:
-- **the plan** — the decisions of the removed resolved topics as numbered items (“1.”, “1.1.”), each with its question and topic id;
-- **the removed topics** — their tree and every topic in full: rationales, quotes, files and lines. This is the only copy: they are deleted from the server.
+The “Apply resolved” button removes from the discussion the branches in which every topic is resolved or closed. A branch with at least one open topic stays whole, with its resolved and closed topics, and the session stays connected. The `wait` output starts with an order to carry out the plan, followed by the plan and the removed topics:
+- **the plan** — the decisions of the resolved topics of the removed branches as numbered items (“1.”, “1.1.”), each with its question and topic id; decisions of subquestions are subitems of their question's decision, and for a closed question they rise to its level;
+- **the removed topics** — their tree and every topic in full: rationales, quotes, files and lines. This is the only copy: they are deleted from the server. Closed topics among them are not part of the plan: nothing is carried out or undone for them (see “Closing”).
 
-Auto-apply applies the resolved ones the same way, by itself: when Claude records the decision of the last open topic or the user declines it. Then `CM resolve` prints that the resolved ones were applied, and the `wait` output is the same, except that the order starts with auto-apply firing.
+Auto-apply applies the resolved ones the same way, by itself: when Claude records the decision of the last open topic or the user closes it. Then `CM resolve` prints that the resolved ones were applied, and the `wait` output is the same, except that the order starts with auto-apply firing.
 
 1. Start `CM wait` in the background again right away: the discussion continues.
 2. Print the whole plan to the chat as it is in the output.
 3. Carry out the plan item by item, even if there are open topics. Take the details for an item from its topic's discussion. Keep the activity on the current item, for example “Carrying out the plan: item 2 of 5 — cache TTL”, and return the default phrase when the plan is done (see “Activity”).
-4. The decision of a parent whose subquestions are marked “applied” does not repeat them: they are already done.
 
 ## Activity
 
@@ -214,6 +232,7 @@ When the Claude Code session ends — on exit or `/clear` — the plugin's `Sess
 - `CM chat -f <file>` — open top-level topics on behalf of the user (see “Question in the chat”).
 - `CM ask -f <file>` — open top-level topics on behalf of Claude: questions the user decides, for example items of a report for discussion. The file is the same JSON list of questions; `text` is the whole item, self-contained. Such topics wait for the user's reply.
 - `CM activity ["<text>"] [--topic <id>]` — what Claude is doing now, in the header of the session's pages and, with `--topic`, above the topic's reply field; without text — the default phrases (see “Activity”).
+- `CM image <file> [<file> …]` — upload images to the session and print their addresses for messages; `leave` deletes them with the session (see “Images” in “Answering a topic”).
 - `CM disconnect` — disconnect the session and keep its discussion; the `SessionEnd` hook runs it with `--hook` (see “End of the Claude Code session”).
 - `CM thread <id>` — the whole topic.
 - `CM show` — a short tree of the session's topics, with “WAITING” marks.
