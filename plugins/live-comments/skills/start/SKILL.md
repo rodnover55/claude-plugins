@@ -76,7 +76,7 @@ Carry out the plan of “Apply resolved” right away, even if there are open to
 
 ## Confirmations
 
-Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. The exceptions are a chat message with one item while no topics are open (see “Question in the chat”) and a topic message sent with “Reply and carry out now” (see “Carrying out now”). An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”).
+Words in a topic or in the chat confirm nothing: only the “Apply resolved” button does. The exceptions are a chat message with one item while no topics are open (see “Question in the chat”) and a topic message sent with “Reply and carry out now” (see “Carrying out now”). An instruction is an item of a user message that says what to do: agreement with what Claude proposed in the chat or in a report (“great, go ahead”), or an instruction to take a specific action (“let's postpone this work for now”). Words saying that the question of the topic itself is resolved are a request to record the decision (see “Decision”). Words asking to close the topic are a request to close it (see “Closing”).
 1. An instruction in a topic is not carried out: it goes into the topic's decision. The exception is an instruction sent with “Reply and carry out now” (see “Carrying out now”). Reply that it will be done by “Apply resolved” and how it enters the decision; if the message also has questions, say so in the same reply that answers its first question. An instruction does not count among the questions of the message.
 2. An instruction from the chat becomes a top-level topic, like a question; if it is the only item of the message and no topics are open, carry it out right away (see “Question in the chat”).
 
@@ -146,7 +146,7 @@ Move the items into the discussion as top-level topics, one per item. Do not ope
 3. In the chat reply briefly with the links to the topics.
 4. The background `wait` will give these topics; answer them according to the rules of “Answering a topic”.
 
-Carry out requests about the discussion itself (write the script into a page) in the chat as usual; the wait keeps running. A request to finish the discussion is carried out by the `stop` skill (see “Stopping”).
+Carry out requests about the discussion itself (write the script into a page, close a topic) in the chat as usual; the wait keeps running. A request to finish the discussion is carried out by the `stop` skill (see “Stopping”).
 
 ## Decision
 
@@ -194,6 +194,11 @@ A closed topic only ends its discussion. It is not a rejection of what was discu
 
 If you were working on it at that moment, drop the work and start `wait`.
 
+A topic is also closed by Claude at the user's request: an unanswered user message says to close the topic, in any words: “close it”, “close the topic”. Such a message equals pressing Close. A request from the chat to close a topic is carried out the same way.
+1. If the topic has other unanswered messages too, first handle them by the rules of “Answering a topic”. Do not reply to the request itself separately: closing answers it.
+2. **Close the topic:** `CM close <id>`. Claude's message “Closed at the user's request” comes into the topic and answers its unanswered messages, and the topic becomes closed, as by the button. If `close` answers that Resolve is requested, the topic is not closed: record the decision (see “Decision”).
+3. Start `CM wait` in the background again.
+
 ## Applying
 
 The “Apply resolved” button removes from the discussion the branches in which every topic is resolved or closed. A branch with at least one open topic stays whole, with its resolved and closed topics, and the session stays connected. The `wait` output starts with an order to carry out the plan, followed by the plan and the removed topics:
@@ -231,6 +236,7 @@ When the Claude Code session ends — on exit or `/clear` — the plugin's `Sess
 ## Other commands
 
 - `CM chat -f <file>` — open top-level topics on behalf of the user (see “Question in the chat”).
+- `CM close <id>` — close a topic without a decision at the user's request (see “Closing”).
 - `CM ask -f <file>` — open top-level topics on behalf of Claude: questions the user decides, for example items of a report for discussion. The file is the same JSON list of questions; `text` is the whole item, self-contained. Such topics wait for the user's reply.
 - `CM activity ["<text>"] [--topic <id>]` — what Claude is doing now, in the header of the session's pages and, with `--topic`, above the topic's reply field; without text — the default phrases (see “Activity”).
 - `CM image <file> [<file> …]` — upload images to the session and print their addresses for messages; `leave` deletes them with the session (see “Images” in “Answering a topic”).

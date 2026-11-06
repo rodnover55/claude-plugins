@@ -41,6 +41,8 @@ The default session is CLAUDE_CODE_SESSION_ID.
     cm.py resolve ID (--decision TEXT | -f FILE)
                                 record the decision and resolve the topic;
                                 -f — the decision from FILE
+    cm.py close ID              close the topic without a decision at the
+                                user's request
     cm.py ask -f FILE           top-level topics on behalf of Claude: questions
                                 the user decides
     cm.py chat -f FILE          top-level topics on behalf of the user: the
@@ -144,7 +146,7 @@ PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
 # The address of an image of a session in the text of a message: 1 — the session, 2 — the name.
 IMAGE_URL = re.compile(re.escape(ORIGIN) + r"/api/([A-Za-z0-9_-]{1,80})/images/(i[0-9a-f]{1,40}\.(?:png|jpg|gif|webp|avif|svg))")
-VERSION = 34
+VERSION = 35
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -1486,9 +1488,15 @@ def make_handler(store, feed):
 
         def act_close(self, s, t, data):
             """Closes the topic without a decision; unavailable while Resolve
-            is requested."""
+            is requested. With claude — Claude closes it at the user's
+            request: its message about closing answers the unanswered
+            messages."""
             if not self.need_unrequested(t):
                 return
+            if data.get("claude"):
+                t["messages"].append({"id": new_id("m"), "author": "claude", "kind": "closed", "created": now(),
+                                      "answers": (pending(t) or {}).get("questions", []),
+                                      "text": "Closed at the user's request"})
             store.close(t)
             self.done(s, t, {"autoApplied": store.auto_apply(s)})
 
@@ -1770,7 +1778,8 @@ def format_topic(topics, t, task=None, hints=True):
     if t["state"] == "resolved":
         out.append(f"decision: {t['decision']}")
     kinds = {"decision": " · decision", "subdecision": " · subquestion decision", "branch": " · subquestions",
-             "reopen": " · decision revoked", "reopened": " · reopened", "resolve": " · decision with Resolve"}
+             "reopen": " · decision revoked", "reopened": " · reopened", "resolve": " · decision with Resolve",
+             "closed": " · closed"}
     for m in t["messages"]:
         who = "Claude" if m["author"] == "claude" else "User"
         kind = kinds.get(m.get("kind"), "") + (" (revoked)" if m.get("revoked") else "") + \
@@ -2063,6 +2072,14 @@ def cmd_resolve(args):
               "wait will give the plan")
 
 
+def cmd_close(args):
+    t = call("POST", f"/api/{need_session(args)}/topics/{args.id}/close", {"claude": True})
+    print(f"topic {t['id']} closed without a decision")
+    if t.get("autoApplied"):
+        print("no open questions are left: auto-apply, turned on by the user, applied the resolved ones; "
+              "wait will give the plan")
+
+
 def session_topics(args):
     return call("GET", f"/api/{need_session(args)}/state")
 
@@ -2287,6 +2304,7 @@ def main():
     d = cmd("resolve", "id").add_mutually_exclusive_group(required=True)
     d.add_argument("--decision")
     d.add_argument("-f", "--file")
+    cmd("close", "id")
     cmd("ask").add_argument("-f", "--file", required=True)
     cmd("chat").add_argument("-f", "--file", required=True)
     a = cmd("activity")
@@ -2299,7 +2317,7 @@ def main():
     args = p.parse_args()
     handlers = {"serve": cmd_serve, "stop": cmd_stop, "open": cmd_open, "embed": cmd_embed, "wait": cmd_wait,
                 "leave": cmd_leave, "show": cmd_show, "thread": cmd_thread, "reply": cmd_reply,
-                "branch": cmd_branch, "resolve": cmd_resolve, "ask": cmd_ask,
+                "branch": cmd_branch, "resolve": cmd_resolve, "close": cmd_close, "ask": cmd_ask,
                 "chat": cmd_chat, "activity": cmd_activity, "image": cmd_image, "sessions": cmd_sessions, "purge": cmd_purge,
                 "disconnect": cmd_disconnect}
     return handlers[args.cmd](args) or 0
