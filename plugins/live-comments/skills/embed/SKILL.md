@@ -21,6 +21,8 @@ In the page opened in the browser, the script turns a selected fragment into a t
 - `CM embed <file>` — writes the line before the last `</body>` of the file outside HTML and template comments (in any letter case, with the indent of `</body>`), or at its end after a blank line if there is no `</body>`, and prints the `file://` path. A line written by `CM embed` before, of this or another session, is replaced; other scripts, and examples of the line that are not on a line of their own, stay. The rest of the file, its line endings included, stays as it was, and a repeated run changes nothing. A file not in UTF-8 is not changed: the command says so.
 - `CM embed --print` — prints the line without writing it.
 
+An element of the page with the attribute `data-cm-parent="<topic id>"` makes questions about fragments inside it subquestions of that topic of the session. The question form offers this topic as the parent, and the user may choose another one. The nearest such element counts, and on `<body>` or `<main>` the attribute covers the whole page. The id of a topic is printed by `CM ask`, `CM chat` and `CM branch`. A topic that is resolved, closed or not in the session is not offered, and the form offers the top level instead.
+
 ## Steps
 
 1. **The discussion.** If the discussion of this session is not running in this conversation — no `CM open` and no background `CM wait` — start it by the `start` skill with the same file as its argument. Its step 2 embeds the file by steps 2–4 below, so after it nothing is left to do here. The script of a session without a discussion shows nothing.

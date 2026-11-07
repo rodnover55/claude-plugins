@@ -146,7 +146,7 @@ PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
 # The address of an image of a session in the text of a message: 1 — the session, 2 — the name.
 IMAGE_URL = re.compile(re.escape(ORIGIN) + r"/api/([A-Za-z0-9_-]{1,80})/images/(i[0-9a-f]{1,40}\.(?:png|jpg|gif|webp|avif|svg))")
-VERSION = 35
+VERSION = 36
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -530,12 +530,24 @@ def new_topic(parent, author, text, anchor=None, title="", created=None):
             "messages": [{"id": new_id("m"), "author": author, "text": text, "created": created}]}
 
 
-def questions_of(data):
-    """Checks the list of questions for branch, ask and chat; returns it or None."""
+def questions_of(data, titled=True):
+    """Checks the list of questions for branch, ask and chat; returns it or None.
+    Without titled a question may have no title."""
     qs = data.get("questions")
-    if not isinstance(qs, list) or not all(isinstance(q, dict) and q.get("title") and q.get("text") for q in qs):
+    if not isinstance(qs, list) or not all(isinstance(q, dict) and (q.get("title") or not titled) and q.get("text")
+                                           for q in qs):
         return None
     return qs
+
+
+def anchor_of(a):
+    """Returns the fields of anchor a that a topic keeps: of diff lines or of
+    a fragment of an HTML page; without anchor — None."""
+    if not isinstance(a, dict):
+        return None
+    keys = ("kind", "file", "staged", "side", "start", "end", "rows", "quote") if a.get("kind") == "diff" else \
+        ("page", "pageTitle", "quote", "prefix", "suffix", "pos", "path", "anchor", "fig")
+    return {k: a.get(k) for k in keys}
 
 
 # -------------------------------------------------------------------- git
@@ -1407,7 +1419,8 @@ def make_handler(store, feed):
         def add_topic(self, s, data):
             """A new top-level topic from the user ({text, anchor}) or topics
             from a list of questions ({questions, author}): from Claude, and
-            with author "user" on behalf of the user."""
+            with author "user" on behalf of the user. A subquestion of a
+            fragment is opened by branch."""
             if "questions" in data:
                 qs = questions_of(data)
                 if not qs:
@@ -1423,11 +1436,7 @@ def make_handler(store, feed):
             if not text:
                 self.fail("empty question", 400)
                 return
-            a = data.get("anchor")
-            keys = ("kind", "file", "staged", "side", "start", "end", "rows", "quote") if isinstance(a, dict) and \
-                a.get("kind") == "diff" else ("page", "pageTitle", "quote", "prefix", "suffix", "pos", "path", "anchor", "fig")
-            anchor = {k: a.get(k) for k in keys} if isinstance(a, dict) else None
-            t = new_topic(None, "user", text, anchor)
+            t = new_topic(None, "user", text, anchor_of(data.get("anchor")))
             s["topics"].append(t)
             store.save(s)
             self.send_json(t)
@@ -1593,9 +1602,17 @@ def make_handler(store, feed):
             its first question in the topic. Without message — questions
             raised by Claude, whose reply in the topic asks the first one:
             subquestions on Claude's behalf that wait for the user's reply.
-            With title — sets the topic's question in one line."""
-            qs = questions_of(data)
+            With author "user" and without message — the user's questions
+            about fragments of an HTML page, all of them subquestions:
+            subquestions on the user's behalf with their anchors, which await
+            Claude's reply; their title may be empty. With title — sets the
+            topic's question in one line."""
             mid = data.get("message")
+            page = data.get("author") == "user" and not mid
+            qs = questions_of(data, titled=not page)
+            if not qs and page:
+                self.fail("a list of one or more questions with text is required", 400)
+                return
             if not qs:
                 self.fail("a list of one or more questions with title and text is required: the questions after "
                           "the first one, which stays in the topic itself — with message, the first question of "
@@ -1607,13 +1624,14 @@ def make_handler(store, feed):
             if mid and not any(m["id"] == mid and m["author"] == "user" for m in t["messages"]):
                 self.fail(f"the topic has no user message {mid}", 404)
                 return
-            made = [new_topic(t["id"], "user" if mid else "claude", q["text"], None, q["title"]) for q in qs]
+            made = [new_topic(t["id"], "user" if mid or page else "claude", q["text"], anchor_of(q.get("anchor")),
+                              q.get("title") or "") for q in qs]
             s["topics"] += made
             if data.get("title"):
                 t["title"] = data["title"]
             t["messages"].append({"id": new_id("m"), "author": "claude", "kind": "branch", "created": now(),
                                   "answers": [], "topics": [x["id"] for x in made],
-                                  "text": "Subquestions: " + "; ".join(f"“{x['title']}”" for x in made)})
+                                  "text": "Subquestions: " + "; ".join(f"“{title_of(x)}”" for x in made)})
             work = store.working.get(s["session"])
             if work and work["tid"] == t["id"] and not work["resolve"] and set(work["questions"]) <= answered(t):
                 del store.working[s["session"]]

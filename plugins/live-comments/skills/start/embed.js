@@ -2,9 +2,11 @@
   "use strict";
 
   // Connects an HTML page to the session's discussion on the cm.py server.
-  // A selected fragment becomes a session topic, fragments with topics are
-  // highlighted, a click on a highlight opens the topic on the server. The
-  // discussion itself happens only there.
+  // A selected fragment becomes a top-level session topic or a subquestion
+  // of an open topic: the one the page sets with data-cm-parent, or the one
+  // chosen in the question form. Fragments with topics are highlighted, a
+  // click on a highlight opens the topic on the server. The discussion
+  // itself happens only there.
   var me = document.currentScript;
   if (!me) return;
   var ORIGIN = new URL(me.src).origin;
@@ -397,6 +399,10 @@
     ui.pop.appendChild(make("div", "lc-pop-label", "Question about the fragment"));
     ui.popQuote = make("div", "lc-pop-quote");
     ui.pop.appendChild(ui.popQuote);
+    ui.popParentRow = make("label", "lc-pop-parent", "Parent question");
+    ui.popParent = make("select", "lc-select");
+    ui.popParentRow.appendChild(ui.popParent);
+    ui.pop.appendChild(ui.popParentRow);
     ui.popText = make("textarea", "lc-textarea");
     ui.popText.rows = 4;
     ui.popText.placeholder = "Question — Claude will answer in the session's discussion";
@@ -452,6 +458,40 @@
     placeNear(ui.selBtn, r, ui.selBtn.offsetWidth || 110, true);
   }
 
+  // The parent the page sets for a fragment in element e: the topic id of
+  // the nearest element with data-cm-parent, without it — the top level.
+  function parentOf(e) {
+    var p = e.closest("[data-cm-parent]");
+    return p ? p.getAttribute("data-cm-parent") || "" : "";
+  }
+
+  // The parents a question can have: the top level and the open topics of
+  // the session in tree order, indented by their open ancestors. A topic
+  // whose parent is not in the session is a top-level one. The chosen one is
+  // the parent the page sets, if it is open, and otherwise the top level.
+  function fillParents(chosen) {
+    var sel = ui.popParent;
+    var topics = st ? st.topics : [];
+    var ids = {}, kids = {};
+    sel.textContent = "";
+    sel.appendChild(new Option("Top level", ""));
+    topics.forEach(function (t) { ids[t.id] = true; });
+    topics.forEach(function (t) {
+      var p = ids[t.parent] ? t.parent : "";
+      (kids[p] = kids[p] || []).push(t);
+    });
+    (function walk(parent, depth) {
+      (kids[parent] || []).forEach(function (t) {
+        var open = t.state === "open";
+        if (open) sel.appendChild(new Option(new Array(depth + 1).join("\u00a0\u00a0\u00a0") + titleOf(t), t.id));
+        walk(t.id, open ? depth + 1 : depth);
+      });
+    })("", 0);
+    sel.value = "";
+    Array.prototype.forEach.call(sel.options, function (o) { if (o.value === chosen) sel.value = chosen; });
+    ui.popParentRow.hidden = sel.options.length < 2;
+  }
+
   function openPopover() {
     if (!pending) return;
     var info = describe(pending);
@@ -462,6 +502,7 @@
     }
     draft = info;
     ui.popQuote.textContent = clip(info.quote, 280);
+    fillParents(parentOf(elOf(pending.startContainer)));
     ui.popText.value = "";
     ui.pop.hidden = false;
     placeNear(ui.pop, pending, Math.min(400, document.documentElement.clientWidth - 16), false);
@@ -474,20 +515,33 @@
     pending = null;
   }
 
+  // A top-level question goes to the session's topics, a subquestion — to
+  // the branch of its parent, as cm.py branch opens them.
   function savePopover() {
     var text = ui.popText.value.trim();
     if (!draft || !text) return;
     var anchor = draft;
+    var parent = ui.popParent.value;
     closePopover();
     var sel = window.getSelection();
     if (sel) sel.removeAllRanges();
-    fetch(API + "/topics", {
+    var url = API + "/topics", data = { text: text, anchor: anchor };
+    if (parent) {
+      url = API + "/topics/" + encodeURIComponent(parent) + "/branch";
+      data = { questions: [{ text: text, anchor: anchor }], author: "user" };
+    }
+    fetch(url, {
       method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text, anchor: anchor })
+      body: JSON.stringify(data)
     }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      toast("Question sent — the answer will be in the discussion");
-    }).catch(function (e) {
+      if (r.ok) {
+        toast("Question sent — the answer will be in the discussion");
+        return;
+      }
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        toast("Question not sent: " + (d.error || "HTTP " + r.status));
+      });
+    }, function (e) {
       toast("The discussion server is unavailable: " + e.message);
     });
   }
