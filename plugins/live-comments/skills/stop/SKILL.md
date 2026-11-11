@@ -7,7 +7,7 @@ allowed-tools:
 
 # live-comments:stop — finish the discussion of a session
 
-The discussion of a session is started by the `start` skill (`/live-comments:start`). This skill finishes it.
+The discussion of a session is started by the `start` skill (`/live-comments:start`). This skill finishes it. The “Stop discussion” button on the session page finishes it from the browser: then the output of `wait` already has what `leave` prints, and only step 3 is left.
 
 `CM` below is `python3 ${CLAUDE_SKILL_DIR}/../start/cm.py`. The commands take the session from `CLAUDE_CODE_SESSION_ID`.
 

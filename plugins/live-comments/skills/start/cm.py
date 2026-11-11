@@ -146,7 +146,7 @@ PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
 # The address of an image of a session in the text of a message: 1 — the session, 2 — the name.
 IMAGE_URL = re.compile(re.escape(ORIGIN) + r"/api/([A-Za-z0-9_-]{1,80})/images/(i[0-9a-f]{1,40}\.(?:png|jpg|gif|webp|avif|svg))")
-VERSION = 36
+VERSION = 39
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -173,6 +173,10 @@ def now():
 
 def new_id(prefix):
     return prefix + format(int(time.time() * 1000), "x") + os.urandom(2).hex()
+
+
+# This run of the server: a page that has the state of another run gets the whole state.
+BOOT = new_id("b")
 
 
 def title_of(t):
@@ -415,25 +419,31 @@ class Store:
         # The status bar of each session's pages from statusfeed; lives while
         # the server lives.
         self.status = {}
+        # Session → topic id → (the digest of the topic, the state number at
+        # which the topic got it); lives while the server lives.
+        self.changed = {}
         DATA.mkdir(parents=True, exist_ok=True)
         for f in DATA.glob("*.json"):
             s = upgrade_session(json.loads(f.read_text(encoding="utf-8")))
             self.sessions[s["session"]] = s
 
     def delete(self, sid):
-        """Deletes session sid and wakes those waiting: their requests to the
-        session get a 410 response. The session file moves to deleted/, from
+        """Deletes session sid — by leave or by the "Stop discussion" button —
+        and wakes those waiting: their requests to the session get a 410
+        response. The session file moves to deleted/, from
         where wait or leave of the session returns the closed_report to
         Claude and erases the file. The images of the session are deleted.
         Auto-apply of the session, on or off, is kept in KEPT_AUTO_APPLY:
-        the next open of the session takes it."""
+        the next open of the session takes it. Auto-apply turned on for one
+        time is kept as off."""
         s = self.sessions.pop(sid, None)
         self.working.pop(sid, None)
         self.status.pop(sid, None)
+        self.changed.pop(sid, None)
         self.deleted.add(sid)
         if s:
             self.save(s)
-            write_auto_apply(KEPT_AUTO_APPLY / sid, bool(s.get("autoApply")))
+            write_auto_apply(KEPT_AUTO_APPLY / sid, bool(s.get("autoApply")) and not s.get("autoApplyOnce"))
         path = DATA / (sid + ".json")
         if path.exists():
             (DATA / "deleted").mkdir(exist_ok=True)
@@ -448,6 +458,7 @@ class Store:
         self.sessions.pop(sid, None)
         self.working.pop(sid, None)
         self.status.pop(sid, None)
+        self.changed.pop(sid, None)
         self.deleted.add(sid)
         purge_files(sid)
         self.cond.notify_all()
@@ -485,6 +496,25 @@ class Store:
                 if w else None,
                 "listening": self.listening.get(sid, 0) > 0, "status": self.status.get(sid), "now": now()}
 
+    def delta(self, s, rev, boot):
+        """Returns public(s) for a page that has state number rev of the
+        server run boot: topics — only the topics changed after that state,
+        ids — the ids of all topics in their order, since — rev. A page
+        without a state, or with the state of another run, gets all topics
+        and no ids. boot in the result is this run."""
+        marks = self.changed.setdefault(s["session"], {})
+        for t in s["topics"]:
+            digest = hashlib.sha1(json.dumps(t, ensure_ascii=False).encode("utf-8")).digest()
+            if marks.get(t["id"], (None, 0))[0] != digest:
+                marks[t["id"]] = (digest, s["rev"])
+        ids = [t["id"] for t in s["topics"]]
+        for tid in set(marks) - set(ids):
+            del marks[tid]
+        state = {**self.public(s), "boot": BOOT}
+        if rev >= 0 and boot == BOOT:
+            state.update(topics=[t for t in s["topics"] if marks[t["id"]][1] > rev], ids=ids, since=rev)
+        return state
+
     def close(self, t):
         """Closes topic t without a decision; its subquestions stay as they are."""
         t.update(state="closed", closed=now(), updated=now(), resolveRequested=None, inWork=False)
@@ -510,11 +540,14 @@ class Store:
     def auto_apply(self, s):
         """Auto-apply: if the user turned it on, no open topics are left and
         at least one is resolved, applies the resolved ones. Auto-apply stays
-        on until cancelled. Returns True if the resolved ones were applied.
-        Does not save the session."""
+        on until cancelled, and the one turned on for one time turns off.
+        Returns True if the resolved ones were applied. Does not save the
+        session."""
         if not s.get("autoApply") or any(t["state"] == "open" for t in s["topics"]) or not self.apply(s, auto=True):
             return False
         s["autoApplied"] = now()
+        if s.get("autoApplyOnce"):
+            s.update(autoApply=None, autoApplyOnce=False)
         return True
 
 
@@ -1007,13 +1040,17 @@ def make_handler(store, feed):
                     rev = int(q.get("rev", ["-1"])[0])
                     # A discussion page with the status bar: its bar is kept current while it polls.
                     bar = "bar" in q
+                    # A page that keeps the state: it gets only what changed (see Store.delta).
+                    delta = "delta" in q
+                    boot = q.get("boot", [""])[0]
                     if bar:
                         feed.page_seen(sid)
-                    store.cond.wait_for(lambda: s["rev"] != rev or sid not in store.sessions, timeout=25)
+                    store.cond.wait_for(lambda: s["rev"] != rev or delta and boot != BOOT
+                                        or sid not in store.sessions, timeout=25)
                     if bar:
                         feed.page_seen(sid)
                     if sid in store.sessions:
-                        self.send_json(store.public(s))
+                        self.send_json(store.delta(s, rev, boot) if delta else store.public(s))
                     else:
                         self.fail(*store.missing(sid))
                 elif what == "next":
@@ -1179,6 +1216,8 @@ def make_handler(store, feed):
                     self.open_session(data)
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "delete":
                     self.delete_session(parts[2])
+                elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "stop":
+                    self.stop_session(parts[2])
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "purge":
                     self.purge_session(parts[2])
                 elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "disconnect":
@@ -1280,6 +1319,26 @@ def make_handler(store, feed):
             store.delete(sid)
             self.send_connected()
 
+        def stop_session(self, sid):
+            """The "Stop discussion" button of the session page: closes the
+            connected session as leave does and marks it stopped, so that its
+            wait gives Claude the closed_report with the order to stop
+            listening. Only the server's own pages stop. If no connected
+            sessions are left, stops the server."""
+            if (self.headers.get("Origin") or "")[7:] not in hosts:
+                self.fail("the discussion is stopped only from the session page", 403)
+                return
+            s = store.sessions.get(sid)
+            if not s:
+                self.fail(*store.missing(sid))
+                return
+            if not s.get("connected"):
+                self.fail("the session is not connected: Claude does not listen to the discussion — nothing changed", 409)
+                return
+            s["stopped"] = now()
+            store.delete(sid)
+            self.send_connected()
+
         def purge_session(self, sid):
             """The purge command: Store.purge. Only cm.py purges: pages in
             the browser send Origin. If no connected sessions are left, stops
@@ -1337,13 +1396,19 @@ def make_handler(store, feed):
             no open topics are left; {on: false} turns it off. If no open
             topics are left when it is turned on, the resolved ones are applied
             at once. The choice becomes the auto-apply of new sessions; other
-            existing sessions keep theirs."""
+            existing sessions keep theirs. {on: true, once: true} turns
+            auto-apply on for one time: it turns off after the resolved ones
+            are applied. Neither this choice nor its cancelling becomes the
+            auto-apply of new sessions."""
             s = store.sessions.get(sid)
             if not s:
                 self.fail(*store.missing(sid))
                 return
+            once = bool(data.get("on") and data.get("once"))
+            if not once and (data.get("on") or not s.get("autoApplyOnce")):
+                write_auto_apply(AUTO_APPLY_DEFAULT, bool(data.get("on")))
             s["autoApply"] = now() if data.get("on") else None
-            write_auto_apply(AUTO_APPLY_DEFAULT, bool(data.get("on")))
+            s["autoApplyOnce"] = once
             applied = store.auto_apply(s)
             store.save(s)
             self.send_json({"autoApply": s["autoApply"], "applied": applied,
@@ -1867,12 +1932,12 @@ def dump(topics, context=()):
     return out
 
 
-def format_session(s, why):
+def format_session(s, why, todo=""):
     """Returns the whole discussion of the deleted session s as text for
-    Claude: a header with the deletion reason why, the tree of topics with
-    states and every topic in full."""
-    return "\n".join([f"Discussion “{s.get('label')}” deleted: {why}. The session is disconnected. "
-                      "Everything collected in it:", "", *dump(s["topics"])])
+    Claude: a header with the deletion reason why and what Claude does next
+    todo, the tree of topics with states and every topic in full."""
+    return "\n".join([f"Discussion “{s.get('label')}” deleted: {why}. The session is disconnected. " +
+                      (todo + " " if todo else "") + "Everything collected in it:", "", *dump(s["topics"])])
 
 
 def format_apply(res):
@@ -1916,14 +1981,19 @@ def format_plan(items, prefix=""):
 
 
 def closed_report(session):
-    """Returns the whole discussion of session session closed by leave and
-    erases its file; None if the session is not closed or the text was
-    already returned."""
+    """Returns the whole discussion of session session closed by leave or by
+    the "Stop discussion" button and erases its file; None if the session is
+    not closed or the text was already returned."""
     path = DATA / "deleted" / (session + ".json")
     if not path.exists():
         return None
-    text = format_session(upgrade_session(json.loads(path.read_text(encoding="utf-8"))),
-                          "the session was closed by leave")
+    s = upgrade_session(json.loads(path.read_text(encoding="utf-8")))
+    if s.get("stopped"):
+        text = format_session(s, "the user stopped it with the “Stop discussion” button on the session page",
+                              "Do not start wait again: list the outcome in the chat by step 3 of the stop skill "
+                              "(/live-comments:stop); its steps 1 and 2 are done.")
+    else:
+        text = format_session(s, "the session was closed by leave")
     path.unlink()
     return text
 

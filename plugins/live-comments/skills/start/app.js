@@ -3,7 +3,8 @@
 
   // The session page (tree of topics), the page of one topic and the change
   // review page (its part is in diff.js). The session state comes by long
-  // polling; re-rendering keeps unfinished text, focus and scroll position.
+  // polling; re-rendering changes only the elements that differ, so the
+  // rest keep the selection, the focus, the scroll position and the typed text.
   var CFG = window.LIVE_COMMENTS || {};
   var SID = CFG.session;
   var TOPIC = CFG.topic || null;
@@ -13,8 +14,20 @@
   var app = document.getElementById("lc-app");
   var SEEN_KEY = "lc-seen:" + SID;
 
+  // The state of the session. The page keeps it: the server sends only the
+  // topics that changed, the others stay the same objects.
   var st = null;
   var rev = -1;
+  // The server run the state came from (see Store.delta in cm.py).
+  var boot = "";
+  // The state without the topics, the status bar and the server time, as text.
+  var meta = "";
+  // What the regions of the page are built from besides Claude's work on
+  // the topics: shown grows with every change of the topics on the server,
+  // local — with every change made in the page itself.
+  var shown = 0, local = 0;
+  // Topic id → the value of shown when the topic last changed.
+  var stamps = {};
   var online = false;
   var byId = {};
   var kids = {};
@@ -28,7 +41,6 @@
   var seen = loadJson(SEEN_KEY, {});
   // Replies first seen on this page: the "new" mark lives until a reload.
   var fresh = {};
-  var deferred = false;
   // The discussion is deleted: the page no longer polls the server.
   var gone = false;
   var toastTimer = null;
@@ -46,6 +58,13 @@
   var applyMenu = false;
   // The topic whose "Reply" menu is open, or null.
   var replyMenu = null;
+  // Whether the "Questions" window of the topic page is open.
+  var treeMenu = false;
+  // Whether the tree of questions of the topic page stands in the side panel
+  // instead of the "Questions" window. Kept in localStorage, so it survives
+  // a reload and moving between pages.
+  var SIDE_KEY = "lc-tree-side";
+  var side = !!loadJson(SIDE_KEY, {}).on;
   // The session page has had a state without questions where it is the
   // user's turn: the first such question that appears opens by itself.
   var autoOpen = false;
@@ -387,7 +406,10 @@
         var close = fenceEnd(m), dedent = new RegExp("^ {0," + m[1].length + "}"), fenced = [];
         for (i++; i < lines.length && !close.test(lines[i]); i++) fenced.push(lines[i].replace(dedent, ""));
         i++;
-        var pre = "<pre><code" + (m[3] ? ' class="language-' + esc(m[3]) + '"' : "") + ">" + esc(fenced.join("\n")) + "</code></pre>";
+        // After the language — the path of the file the code is written for.
+        var file = l.slice(m[0].length).trim();
+        var pre = "<pre" + (file ? ' data-file="' + esc(file) + '"' : "") + "><code" +
+          (m[3] ? ' class="language-' + esc(m[3]) + '"' : "") + ">" + esc(fenced.join("\n")) + "</code></pre>";
         var kind = DIAGRAM[m[3].toLowerCase()];
         add({ html: kind ? '<div class="lc-diagram" data-kind="' + kind + '">' + pre + "</div>" : pre });
       } else if ((m = HEADING.exec(l))) {
@@ -448,13 +470,189 @@
     return mdJoin(mdBlocks(lines, 0), false);
   }
 
-  function md(text, cls) {
+  // The element of Markdown text. Its content is built when the element
+  // enters the page (see patchKids): an element of the same text that is
+  // already there stays instead. apply — the code blocks written for a file
+  // get the "Apply" button.
+  function md(text, cls, apply) {
     var e = make("div", "lc-md" + (cls ? " " + cls : ""));
-    e.innerHTML = mdToHtml(text);
-    e.lcSrc = String(text || "").replace(/\r\n?/g, "\n").split("\n");
-    e.querySelectorAll(".lc-diagram").forEach(showDiagram);
-    e.querySelectorAll("pre>code[class^='language-']").forEach(highlightCode);
+    e.lcSig = (cls || "") + "\n" + (apply ? 1 : 0) + "\n" + text;
+    e.lcFill = function () {
+      e.innerHTML = mdToHtml(text);
+      e.lcSrc = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+      e.querySelectorAll("img").forEach(imgBox);
+      e.querySelectorAll(".lc-diagram").forEach(showDiagram);
+      e.querySelectorAll("pre>code[class^='language-']").forEach(highlightCode);
+      e.querySelectorAll("pre").forEach(codeBox);
+      e.querySelectorAll("pre>code.language-diff").forEach(diffBox);
+      if (apply) e.querySelectorAll(".lc-code-head").forEach(function (head) {
+        if (!head.parentNode.querySelector("pre[data-file]")) return;
+        var b = head.insertBefore(button("Apply", "code-apply", "lc-small primary"), head.querySelector("[data-act=code-copy]"));
+        b.title = "Claude puts the code into the file right away and answers in the topic";
+      });
+    };
     return e;
+  }
+
+  // A button over the corner of a block.
+  function tool(label, act) {
+    var b = make("button", "", label);
+    b.type = "button";
+    b.setAttribute("data-act", act);
+    return b;
+  }
+
+  // The icon of the "Full screen" button: the corners of a frame.
+  var FULL_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>';
+
+  // The "Full screen" button of a block, the last one of its buttons: an
+  // icon without text, so the text of a message is the same for a selection.
+  // cls — the classes of a button of a head.
+  function fullButton(cls) {
+    var b = tool(null, "full");
+    b.className = cls || "";
+    b.title = "Full screen";
+    b.setAttribute("aria-label", b.title);
+    b.innerHTML = FULL_ICON;
+    return b;
+  }
+
+  // Code block pre gets the "Copy" and "Full screen" buttons. A block
+  // written for a file and a diff block have them in a head with the file's
+  // path, another block — over its corner.
+  function codeBox(pre) {
+    var box = make("div", "lc-code");
+    pre.parentNode.insertBefore(box, pre);
+    var file = pre.getAttribute("data-file");
+    if (file || pre.querySelector("code.language-diff")) {
+      var head = box.appendChild(make("div", "lc-code-head"));
+      head.appendChild(make("span", "lc-code-file", file));
+      head.appendChild(button("Copy", "code-copy", "lc-small"));
+      head.appendChild(fullButton("lc-btn lc-small"));
+    } else {
+      var tools = box.appendChild(make("span", "lc-tools"));
+      tools.appendChild(tool("Copy", "code-copy"));
+      tools.appendChild(fullButton());
+    }
+    box.appendChild(pre);
+  }
+
+  // Image img gets the "Full screen" button over its corner.
+  function imgBox(img) {
+    var box = make("span", "lc-img");
+    img.parentNode.insertBefore(box, img);
+    box.appendChild(img);
+    box.appendChild(make("span", "lc-tools")).appendChild(fullButton());
+  }
+
+  // ---- Diffs of code blocks: ```diff is shown as on the change review page,
+  // the old and new versions side by side or inline. The buttons in the head
+  // of a block switch the view of all blocks; the choice is the one of the
+  // change review page (see MODE_KEY in diff.js).
+
+  var DIFF_MODE_KEY = "lc-diff-mode";
+
+  function diffMode() {
+    try {
+      return window.localStorage.getItem(DIFF_MODE_KEY) === "inline" ? "inline" : "split";
+    } catch (e) {
+      return "split";
+    }
+  }
+
+  // The lines of diff text as in file_diff of cm.py: {t: " ", "+", "-" or
+  // "@", o, n, s: text}. o and n — the line numbers in the old and new
+  // versions, known after a "@@ -o +n @@" line. The lines of the diff's
+  // header and of the hunks' headers have t "@".
+  function diffRows(text) {
+    var lines = text.replace(/\n$/, "").split("\n"), rows = [], o = null, n = null;
+    lines.forEach(function (l, i) {
+      var m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+      var head = /^(diff --git |index )/.test(l) || /^--- /.test(l) && /^\+\+\+ /.test(lines[i + 1] || "") ||
+        /^\+\+\+ /.test(l) && /^--- /.test(lines[i - 1] || "");
+      if (m) {
+        o = +m[1];
+        n = +m[2];
+      }
+      if (m || head) rows.push({ t: "@", s: l });
+      else if (l.charAt(0) === "\\") {
+        if (rows.length) rows[rows.length - 1].noeol = true;
+      } else {
+        var t = /^[+-]/.test(l) ? l.charAt(0) : " ", r = { t: t, s: /^[+\- ]/.test(l) ? l.slice(1) : l };
+        if (o != null && t !== "+") r.o = o++;
+        if (o != null && t !== "-") r.n = n++;
+        rows.push(r);
+      }
+    });
+    return rows;
+  }
+
+  // The table of diff lines rows in view mode. A cell with the text of a
+  // line keeps the index of the line in data-row.
+  function diffTable(rows, mode) {
+    var nums = rows.some(function (r) { return r.o != null || r.n != null; });
+    var table = make("table", "lc-dtable lc-dt-" + mode);
+    var cols = table.appendChild(make("colgroup"));
+    (mode === "inline" ? ["lc-c-ln", "lc-c-ln", "lc-c-sign", "lc-c-code"] : ["lc-c-ln", "lc-c-code", "lc-c-ln", "lc-c-code"])
+      .forEach(function (c) { if (nums || c !== "lc-c-ln") cols.appendChild(make("col", c)); });
+    var body = table.appendChild(make("tbody"));
+    function num(tr, v, cls) {
+      if (nums) tr.appendChild(make("td", "lc-ln" + cls, v == null ? "" : String(v)));
+    }
+    function code(tr, i, cls) {
+      var r = rows[i], td = tr.appendChild(make("td", "lc-code" + cls, r ? r.s : ""));
+      if (r) td.setAttribute("data-row", i);
+      if (r && r.noeol) td.appendChild(make("span", "lc-noeol", "⊘ no newline at end of file"));
+      return td;
+    }
+    window.LiveCommentsDiff.layout(rows, mode).lines.forEach(function (line) {
+      var i = line.rows[0], r = rows[i], tr = body.appendChild(make("tr", "lc-dr"));
+      if (r.t === "@") {
+        tr.className += " lc-dr-hunk";
+        code(tr, i, "").colSpan = cols.childNodes.length;
+      } else if (mode === "inline") {
+        tr.className += " lc-dr-" + ({ "+": "add", "-": "del", " ": "ctx" })[r.t];
+        num(tr, r.o, "");
+        num(tr, r.n, "");
+        tr.appendChild(make("td", "lc-sign", r.t === " " ? "" : r.t));
+        code(tr, i, "");
+      } else {
+        var del = line.blk < 0 ? i : line.del, add = line.blk < 0 ? i : line.add;
+        var dc = line.blk < 0 ? "" : del != null ? " lc-cdel" : " lc-cfill";
+        var ac = line.blk < 0 ? "" : add != null ? " lc-cadd" : " lc-cfill";
+        num(tr, del != null ? rows[del].o : null, dc);
+        code(tr, del, dc);
+        num(tr, add != null ? rows[add].n : null, ac);
+        code(tr, add, ac);
+      }
+    });
+    return table;
+  }
+
+  // The block of code element code is shown as a diff: the table stands in
+  // place of the source, which stays in the block for "Copy" and "Apply".
+  function diffBox(code) {
+    var pre = code.parentNode, box = pre.parentNode, head = box.querySelector(".lc-code-head");
+    var rows = diffRows(code.textContent);
+    var seg = head.insertBefore(make("span", "lc-seg"), head.querySelector("[data-act=code-copy]"));
+    var view = box.appendChild(make("div", "lc-mdiff"));
+    box.classList.add("lc-code-diff");
+    // The block's source lines belong to the block with the table: a selection in the table is inside them.
+    box.setAttribute("data-l", pre.getAttribute("data-l"));
+    pre.removeAttribute("data-l");
+    view.lcRows = rows;
+    box.lcDraw = function () {
+      var mode = diffMode();
+      seg.textContent = "";
+      [["split", "Side by side"], ["inline", "Inline"]].forEach(function (m) {
+        var b = seg.appendChild(button(m[1], "diff-mode", "lc-small" + (mode === m[0] ? " lc-on" : "")));
+        b.setAttribute("data-mode", m[0]);
+      });
+      view.textContent = "";
+      view.appendChild(diffTable(rows, mode));
+    };
+    box.lcDraw();
   }
 
   // ---- Diagrams of code blocks: ```mermaid is drawn in the page by Mermaid
@@ -512,19 +710,24 @@
   }
 
   // Draws the diagram of block el: the diagram is shown instead of the source,
-  // the "source" button switches between them.
+  // the "source" button switches between them, the "Full screen" button
+  // shows the one of them that is shown in the window. The buttons of the
+  // source, with "Copy", are the ones of the diagram.
   function showDiagram(el) {
     var kind = el.getAttribute("data-kind"), source = el.textContent, key = kind + "\n" + source;
     function put(html) {
       var view = make("div", "lc-diagram-view");
       view.innerHTML = html;
-      var toggle = make("button", "lc-diagram-toggle", "source");
+      var tools = make("span", "lc-tools");
+      tools.appendChild(tool("Copy", "code-copy"));
+      var toggle = tools.appendChild(make("button", "lc-diagram-toggle", "source"));
       toggle.type = "button";
       toggle.addEventListener("click", function () {
         toggle.textContent = el.classList.toggle("lc-diagram-source") ? "diagram" : "source";
       });
+      tools.appendChild(fullButton());
       el.insertBefore(view, el.firstChild);
-      el.insertBefore(toggle, el.firstChild);
+      el.insertBefore(tools, el.firstChild);
       el.classList.add("lc-diagram-ready");
     }
     if (typeof diagramCache[key] === "string") {
@@ -543,6 +746,167 @@
     diagramCache[key].then(put, function (e) {
       el.appendChild(make("div", "lc-diagram-error", (kind === "mermaid" ? "Mermaid: " : "PlantUML: ") + (e && e.message || e)));
     });
+  }
+
+  // ---- Full screen: the "Full screen" button of a code block, a diagram or
+  // an image shows it in a window over the whole page. A diagram and an image
+  // are zoomed there by the wheel and moved by dragging.
+
+  // The window: outside app, so re-rendering the page does not remove it.
+  var fullEl = null;
+  // The block shown in the window and the button that opened it; null while the window is closed.
+  var fullSrc = null, fullBy = null;
+  // The diagram or image of the window: {el, view — the part of the window
+  // it moves in, w, h — its size at scale 1, vector, s — the scale, x, y —
+  // its place in view, fitted — it is as fitFull has put it}.
+  var pan = null;
+  // The free space around a fitted diagram or image and the part of it that stays in the window, in pixels.
+  var FULL_PAD = 16, FULL_EDGE = 48;
+
+  // Shows the diagram or image of the window with its scale at its place; a part of it stays in the window.
+  function placeFull() {
+    var p = pan, w = p.w * p.s, h = p.h * p.s;
+    p.x = Math.min(p.view.clientWidth - FULL_EDGE, Math.max(FULL_EDGE - w, p.x));
+    p.y = Math.min(p.view.clientHeight - FULL_EDGE, Math.max(FULL_EDGE - h, p.y));
+    p.el.style.width = w + "px";
+    p.el.style.height = h + "px";
+    p.el.style.transform = "translate(" + p.x + "px," + p.y + "px)";
+  }
+
+  // Puts the diagram or image of the window whole in its middle: a vector
+  // one up to twice its size, another one not above its size.
+  function fitFull() {
+    var p = pan, vw = p.view.clientWidth, vh = p.view.clientHeight;
+    p.s = Math.min((vw - 2 * FULL_PAD) / p.w, (vh - 2 * FULL_PAD) / p.h, p.vector ? 2 : 1);
+    p.x = (vw - p.w * p.s) / 2;
+    p.y = (vh - p.h * p.s) / 2;
+    p.fitted = true;
+    placeFull();
+  }
+
+  // Changes the scale of the diagram or image of the window k times; point (cx, cy) of view stays where it is.
+  function zoomFull(k, cx, cy) {
+    var p = pan, s = Math.min(40, Math.max(0.05, p.s * k));
+    p.x = cx - (cx - p.x) * s / p.s;
+    p.y = cy - (cy - p.y) * s / p.s;
+    p.s = s;
+    p.fitted = false;
+    placeFull();
+  }
+
+  // The wheel zooms at the pointer, dragging with the left button moves.
+  function panView(view) {
+    var drag = null;
+    view.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      var box = view.getBoundingClientRect();
+      var d = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+      // A pinch on a touchpad comes as the wheel with Ctrl and small steps.
+      zoomFull(Math.exp(-d * (e.ctrlKey ? 0.01 : 0.0025)), e.clientX - box.left, e.clientY - box.top);
+    }, { passive: false });
+    view.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
+      view.setPointerCapture(e.pointerId);
+      view.classList.add("lc-full-drag");
+      drag = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+    });
+    view.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      pan.x = e.clientX - drag.x;
+      pan.y = e.clientY - drag.y;
+      pan.fitted = false;
+      placeFull();
+    });
+    function drop() {
+      drag = null;
+      view.classList.remove("lc-full-drag");
+    }
+    view.addEventListener("pointerup", drop);
+    view.addEventListener("pointercancel", drop);
+    // The browser does not drag the image away instead.
+    view.addEventListener("dragstart", function (e) { e.preventDefault(); });
+  }
+
+  // Builds the window with block fullSrc. A code block comes with its
+  // buttons, which press the buttons of the block; a diagram and an image —
+  // with the zoom buttons.
+  function drawFull() {
+    var src = fullSrc, head = make("div", "lc-full-head"), body = make("div", "lc-full-body");
+    var file = src.querySelector(":scope > .lc-code-head > .lc-code-file");
+    var img = src.querySelector(":scope > img, :scope > .lc-diagram-view > svg, :scope > .lc-diagram-view > img");
+    head.appendChild(make("span", "lc-code-file", file ? file.textContent : img && img.alt || ""));
+    pan = null;
+    if (img) {
+      var el = img.cloneNode(true), view = body.appendChild(make("div", "lc-full-view"));
+      var box = img.getBoundingClientRect(), vb = img.viewBox && img.viewBox.baseVal;
+      el.style.maxWidth = "none";
+      el.draggable = false;
+      view.appendChild(el);
+      panView(view);
+      pan = {
+        el: el, view: view, vector: !img.naturalWidth || /^blob:|\.svg$/i.test(img.src),
+        w: img.naturalWidth || vb && vb.width || box.width || 1, h: img.naturalHeight || vb && vb.height || box.height || 1
+      };
+      [["−", "Zoom out", 0.8], ["+", "Zoom in", 1.25]].forEach(function (z) {
+        var b = head.appendChild(button(z[0], "zoom", "lc-small"));
+        b.title = z[1];
+        b.lcDo = function () { zoomFull(z[2], view.clientWidth / 2, view.clientHeight / 2); };
+      });
+      var fit = head.appendChild(button("Fit", "fit", "lc-small"));
+      fit.title = "The whole image in the window";
+      fit.lcDo = fitFull;
+    } else {
+      [].forEach.call(src.querySelector(":scope > .lc-code-head, :scope > .lc-tools").children, function (c) {
+        if (c.classList.contains("lc-code-file") || c.getAttribute("data-act") === "full") return;
+        var copy = head.appendChild(c.cloneNode(true));
+        var was = c.matches("button") ? [c] : c.querySelectorAll("button");
+        [].forEach.call(copy.matches("button") ? [copy] : copy.querySelectorAll("button"), function (b, i) {
+          b.className = b.className || "lc-btn lc-small";
+          b.lcPress = was[i];
+        });
+      });
+      // A diff block is shown by its table, which stands after the source.
+      var shown = src.querySelector(":scope > .lc-mdiff") || src.querySelector(":scope > pre");
+      body.appendChild(make("div", "lc-md lc-full-code")).appendChild(shown.cloneNode(true));
+    }
+    var close = head.appendChild(button("✕", "close-full", "lc-small"));
+    close.title = "Close (Esc)";
+    close.lcDo = function () { showFull(null); };
+    fullEl.textContent = "";
+    fullEl.appendChild(head);
+    fullEl.appendChild(body);
+    if (pan) fitFull();
+  }
+
+  // Opens the window with the block of its "Full screen" button by; without by closes the window.
+  function showFull(by) {
+    if (!fullEl) {
+      fullEl = make("div", "lc-full");
+      fullEl.addEventListener("click", function (e) {
+        var b = e.target.closest("button");
+        if (b && b.lcPress) {
+          b.lcPress.click();
+          drawFull();
+        } else if (b && b.lcDo) b.lcDo();
+      });
+      document.body.appendChild(fullEl);
+    }
+    var was = fullBy;
+    fullSrc = by && by.closest(".lc-img, .lc-code, .lc-diagram");
+    // A diagram switched to its source is shown as the code block of the source.
+    if (fullSrc && fullSrc.classList.contains("lc-diagram-source")) fullSrc = fullSrc.querySelector(":scope > .lc-code");
+    fullBy = fullSrc && by;
+    fullEl.hidden = !fullSrc;
+    // The page under the window does not scroll and has no scroll bar beside the window.
+    document.documentElement.classList.toggle("lc-full-on", !!fullSrc);
+    if (fullSrc) {
+      drawFull();
+      fullEl.querySelector("[data-act=close-full]").focus();
+    } else {
+      fullEl.textContent = "";
+      pan = null;
+      if (was && was.isConnected) was.focus({ preventScroll: true });
+    }
   }
 
   // ---- Syntax highlighting of code blocks ```LANG by highlight.js from the
@@ -746,6 +1110,7 @@
   // Writes the text of field key to the drafts; empty text deletes the draft.
   // The drafts are re-read before writing: another tab could have changed them.
   function setDraft(key, text) {
+    local++;
     drafts = loadJson(DRAFTS_KEY, {});
     if (!text.trim()) {
       delete drafts[key];
@@ -882,7 +1247,8 @@
       var sub = m.revoked ? null : subDecisions(t);
       if (sub) el.appendChild(sub);
     } else {
-      el.appendChild(md(m.text));
+      // "Apply" at the code blocks Claude wrote for a file.
+      el.appendChild(md(m.text, "", claude && !kind && t.state === "open"));
     }
     return el;
   }
@@ -952,17 +1318,19 @@
   // A topic in the tree: a row with the question; the arrow expands the rows
   // of subquestions, a click on the row opens the topic page with the discussion.
   // A resolved or closed topic of an unfinished branch looks like an open one.
-  function nodeEl(t) {
-    var open = isExpanded(t);
+  // all — a row of the "Questions" window or the side panel: subquestions are always shown,
+  // and the row of the open topic is marked.
+  function nodeEl(t, all) {
     var list = ordered(kids[t.id]);
+    var open = all ? list.length > 0 : isExpanded(t);
     var li = make("li", "lc-node lc-" + t.state + " lc-s-" + status(t)[0] +
       (t.state !== "open" && !finishedBranch(t) ? " lc-branch-open" : ""));
     li.setAttribute("data-tid", t.id);
-    var row = make("div", "lc-row");
-    row.setAttribute("data-key", "row:" + t.id);
+    var row = make("div", "lc-row" + (all && t.id === TOPIC ? " lc-active" : ""));
+    if (!all) row.setAttribute("data-key", "row:" + t.id);
     row.setAttribute("data-href", "/" + SID + "/" + t.id);
-    var tog = make("span", "lc-tog", list.length ? (open ? "▾" : "▸") : "");
-    if (list.length) {
+    var tog = make("span", "lc-tog", list.length && !all ? (open ? "▾" : "▸") : "");
+    if (list.length && !all) {
       tog.setAttribute("data-act", "toggle");
       tog.title = open ? "Collapse subquestions" : "Show subquestions";
     }
@@ -975,10 +1343,54 @@
     li.appendChild(row);
     if (open) {
       var ol = make("ol", "lc-tree");
-      list.forEach(function (k) { ol.appendChild(nodeEl(k)); });
+      list.forEach(function (k) { ol.appendChild(nodeEl(k, all)); });
       li.appendChild(ol);
     }
     return li;
+  }
+
+  // The tree of all questions of the session, where a click on a row opens
+  // the topic page.
+  function allTreeEl() {
+    var box = make("div", "lc-tree-all");
+    var ol = make("ol", "lc-tree");
+    ordered(kids[""]).forEach(function (t) { ol.appendChild(nodeEl(t, true)); });
+    box.appendChild(ol);
+    return box;
+  }
+
+  // The "Questions" button of the topic page and its window with allTreeEl;
+  // "Open at the side" moves the tree to the side panel.
+  function treeMenuEl() {
+    var box = make("div", "lc-tree-box");
+    var b = button("☰ Questions", "tree-menu");
+    b.title = "Tree of all questions";
+    box.appendChild(b);
+    if (treeMenu) {
+      var menu = make("div", "lc-menu lc-tree-menu");
+      var head = make("div", "lc-tree-head");
+      var dock = button("Open at the side", "tree-side", "lc-small");
+      dock.title = "Keep the tree of questions at the left side of the page";
+      head.appendChild(dock);
+      menu.appendChild(head);
+      menu.appendChild(allTreeEl());
+      box.appendChild(menu);
+    }
+    return box;
+  }
+
+  // The side panel of the topic page with allTreeEl; "✕" brings the
+  // "Questions" button back.
+  function sideEl() {
+    return region(make("aside", "lc-side"), function (box) {
+      var head = make("div", "lc-tree-head");
+      head.appendChild(make("h2", "lc-h2", "Questions"));
+      var close = button("✕", "tree-unside", "lc-small");
+      close.title = "Close the side panel: the tree opens with the “Questions” button";
+      head.appendChild(close);
+      box.appendChild(head);
+      box.appendChild(allTreeEl());
+    });
   }
 
   // The topic's discussion on its page: quote, messages, reply. Subquestions
@@ -1044,9 +1456,40 @@
     return TOPIC || diff ? "/" + SID : null;
   }
 
+  // The title of open topic t at the end of the path in the header. Under
+  // the pointer it shows the first message of the topic in full; Esc hides
+  // the message until the pointer leaves the title.
+  var popOff = false;
+  function crumbTopicEl(t) {
+    var box = make("span", "lc-crumb-topic" + (popOff ? " lc-pop-off" : ""));
+    box.appendChild(make("span", "lc-crumb-title", titleOf(t)));
+    if (t.messages.length) {
+      var pop = make("div", "lc-topic-pop");
+      pop.appendChild(md(t.messages[0].text));
+      box.appendChild(pop);
+    }
+    return box;
+  }
+
+  // The height of the header that stays on top while scrolling: the page
+  // scrolls an element into view below it.
+  function headHeight() {
+    var h = app.querySelector(".lc-head-fixed");
+    document.documentElement.style.setProperty("--lc-head-h", (h ? h.offsetHeight : 0) + "px");
+  }
+
+  // Hides the first message of the topic shown under the pointer.
+  function hidePop() {
+    var box = app.querySelector(".lc-crumb-topic:hover");
+    if (!box) return;
+    popOff = true;
+    box.classList.add("lc-pop-off");
+  }
+
   function headerEl() {
-    var h = make("header", "lc-head");
+    var h = make("header", "lc-head" + (diff ? "" : " lc-head-fixed"));
     if (TOPIC) {
+      if (!side) h.appendChild(treeMenuEl());
       var back = make("a", "lc-btn lc-back", "← Back");
       back.href = upHref();
       back.appendChild(make("span", "lc-key", "Alt+U"));
@@ -1068,6 +1511,10 @@
         crumb.title = titleOf(x);
         nav.appendChild(crumb);
       });
+      if (byId[TOPIC]) {
+        nav.appendChild(make("span", "lc-sep", "›"));
+        nav.appendChild(crumbTopicEl(byId[TOPIC]));
+      }
       h.appendChild(nav);
     } else if (diff) {
       var home = make("a", "lc-btn lc-back", "← Discussion");
@@ -1094,6 +1541,12 @@
       review.title = "Git change review: staging and questions on lines";
       acts.appendChild(review);
       acts.appendChild(applyEl());
+      // Only a connected session has Claude's wait that gets the outcome.
+      if (st.connected) {
+        var stop = button("Stop discussion", "stop-session", "lc-stop");
+        stop.title = "Claude stops listening and lists the outcome in the chat; the questions are deleted";
+        acts.appendChild(stop);
+      }
       h.appendChild(acts);
     }
     return h;
@@ -1108,7 +1561,7 @@
     a.href = rest[0].href;
     a.appendChild(make("span", "lc-key", "Alt+X"));
     a.title = "Next draft: " + draftPlace(rest[0].key) + " · Alt+X";
-    a.addEventListener("click", function () { markFocus(rest[0].key); });
+    a.setAttribute("data-draft", rest[0].key);
     return a;
   }
 
@@ -1165,10 +1618,11 @@
 
   // The "Apply resolved" button, available when at least one question of a
   // finished branch is resolved, and the arrow of its menu: turn on auto-apply — the resolved
-  // ones apply by themselves as soon as no open questions are left — or
-  // cancel it. Auto-apply belongs to the whole session, and the choice also
-  // becomes the auto-apply of new sessions. While auto-apply waits, a badge
-  // with the number of open questions stands next to it.
+  // ones apply by themselves as soon as no open questions are left — for good
+  // or for one time, or cancel it. Auto-apply belongs to the whole session, and
+  // the choice, except the one for one time, also becomes the auto-apply of new
+  // sessions. While auto-apply waits, a badge with the number of open questions
+  // stands next to it.
   function applyEl() {
     var box = make("div", "lc-split");
     var b = button("Apply resolved", "apply-session", "primary");
@@ -1180,8 +1634,8 @@
     more.title = "Auto-apply";
     var open = openCount();
     if (st.autoApply) {
-      var mark = make("span", "lc-badge lc-b-queued", "applies by itself · open: " + open);
-      mark.title = "The resolved ones apply when no open questions are left";
+      var mark = make("span", "lc-badge lc-b-queued", (st.autoApplyOnce ? "applies once" : "applies by itself") + " · open: " + open);
+      mark.title = "The resolved ones apply " + (st.autoApplyOnce ? "once " : "") + "when no open questions are left";
       box.appendChild(mark);
     }
     box.appendChild(b);
@@ -1191,11 +1645,19 @@
       var item = st.autoApply ? button("Cancel auto-apply", "auto-apply-off", "lc-menu-item") :
         button("Apply when all questions are resolved", "auto-apply-on", "lc-menu-item");
       item.appendChild(make("span", "lc-menu-hint", st.autoApply ?
-        "The resolved ones stay in the discussion until “Apply resolved” is pressed; new sessions start without auto-apply" :
+        "The resolved ones stay in the discussion until “Apply resolved” is pressed" +
+        (st.autoApplyOnce ? "" : "; new sessions start without auto-apply") :
         (!open && n ? "No open questions: apply right away" :
           "The resolved ones go to Claude for execution as soon as no open questions are left") +
         "; new sessions start with auto-apply"));
       menu.appendChild(item);
+      if (!st.autoApply) {
+        var once = button("Apply resolved once", "auto-apply-once", "lc-menu-item");
+        once.appendChild(make("span", "lc-menu-hint", (!open && n ? "No open questions: apply right away" :
+          "The resolved ones go to Claude for execution one time, as soon as no open questions are left") +
+          "; new sessions start as before"));
+        menu.appendChild(once);
+      }
       box.appendChild(menu);
     }
     return box;
@@ -1230,10 +1692,22 @@
   // Where "Next unanswered" leads: from a topic page — to nextUnanswered,
   // and if there are no other such questions — to the session page; from the
   // session page — to the first such question, and if there are none — null.
+  // The question opens at Claude's last message (see showLast).
   function nextHref() {
     var next = nextUnanswered(TOPIC);
-    if (next) return "/" + SID + "/" + next.id;
+    if (next) return "/" + SID + "/" + next.id + "#last";
     return TOPIC ? "/" + SID : null;
+  }
+
+  // A topic page opened by "Next unanswered" shows Claude's last message
+  // of the topic at the top.
+  var toLast = location.hash === "#last";
+  function showLast() {
+    if (!toLast || !byId[TOPIC]) return;
+    toLast = false;
+    history.replaceState(null, "", location.pathname + location.search);
+    var all = app.querySelectorAll(".lc-topic>.lc-body>[data-mid]");
+    if (all.length) all[all.length - 1].scrollIntoView({ block: "start" });
   }
 
   // On the session page, after a state without questions where it is the
@@ -1366,7 +1840,7 @@
       }).observe(sbarEl);
     }
     sbarEl.hidden = false;
-    sbarEl.textContent = "";
+    var bar = make("footer");
     var now = Date.now(), updated = Date.parse(s.updated) || 0;
     items.forEach(function (item) {
       if (!item || !Array.isArray(item.blocks)) return;
@@ -1377,21 +1851,153 @@
         if (e) el.appendChild(e);
       });
       // An empty fill item still pushes the next items to the right.
-      if (el.firstChild || item.fill === true) sbarEl.appendChild(el);
+      if (el.firstChild || item.fill === true) bar.appendChild(el);
     });
+    patchKids(sbarEl, bar);
   }
 
-  // Whether states a and b differ only in the status bar and in the server
-  // time: then the page itself is not re-rendered.
-  function onlyStatus(a, b) {
-    function core(x) { return JSON.stringify(Object.assign({}, x, { rev: 0, now: 0, status: 0 })); }
-    return core(a) === core(b);
+  // ---- patching: a re-render builds the page anew and brings the page in
+  // the browser to it, changing only what differs. An element that stays is
+  // the same element: the selection, the focus, the scroll position and the
+  // typed text stay with it.
+
+  // The key of node n among its siblings; "" if it has none.
+  function keyOf(n) {
+    return n.nodeType === 1 && (n.getAttribute("data-key") || n.getAttribute("data-tid") ||
+      n.getAttribute("data-path") || n.getAttribute("data-line")) || "";
+  }
+
+  // The kind of node n: the tag and the first class. A node is brought only
+  // to a node of its kind.
+  function kindOf(n) {
+    return n.nodeType === 1 ? n.nodeName + "." + (n.classList[0] || "") : "#";
+  }
+
+  // Builds the content of node n and of the elements inside it whose
+  // content is built on entering the page (lcFill).
+  function fill(n) {
+    if (n.nodeType !== 1) return;
+    var whole = n.lcFill && !n.lcDeep;
+    if (n.lcFill) {
+      n.lcFill();
+      n.lcFill = null;
+    }
+    if (!whole) Array.prototype.forEach.call(n.children, fill);
+  }
+
+  // Claude's work on the topics as text: the queue, the topic in work and
+  // what Claude does for a topic.
+  function workOf() {
+    return [st.queue.join(), JSON.stringify(st.working),
+      st.activity && st.activity.topic ? JSON.stringify(st.activity) : ""].join("\n");
+  }
+
+  // Topics list and their subquestions at any depth as text that changes
+  // when any of them changes.
+  function stampOf(list) {
+    return list.map(function (t) {
+      return t.id + ":" + stamps[t.id] + "(" + stampOf(kids[t.id] || []) + ")";
+    }).join();
+  }
+
+  // A region of the page: element el whose content build(el) makes. It is
+  // built when the region enters the page and when what it is built from
+  // has changed; otherwise the region in the page stays untouched. A region
+  // is built from the changes made in the page itself and from deps — a
+  // list of values; without deps — from all topics and Claude's work on them.
+  function region(el, build, deps) {
+    el.lcSig = [local].concat(deps || [shown, workOf()]).join("\n");
+    el.lcDeep = true;
+    el.lcFill = function () { build(el); };
+    return el;
+  }
+
+  // Brings node live to node fresh of its kind: the text, the attributes
+  // and the children. An element with lcSig stays as it is while fresh has
+  // the same lcSig; with another one a region (lcDeep) is brought to the
+  // built fresh, and any other element is replaced by it. An input field
+  // keeps its text and what the browser and the user set on it.
+  function patch(live, fresh) {
+    if (fresh.nodeType !== 1) {
+      if (live.data !== fresh.data) live.data = fresh.data;
+      return;
+    }
+    if (live.lcSig !== fresh.lcSig) {
+      if (!live.lcDeep || !fresh.lcDeep) {
+        fill(fresh);
+        live.parentNode.replaceChild(fresh, live);
+        return;
+      }
+      // The regions inside are compared on their own.
+      fresh.lcFill();
+      fresh.lcFill = null;
+      live.lcSig = fresh.lcSig;
+    } else if (fresh.lcSig !== undefined) return;
+    var field = live.nodeName === "TEXTAREA";
+    if (!field) live.getAttributeNames().forEach(function (a) {
+      if (!fresh.hasAttribute(a)) live.removeAttribute(a);
+    });
+    fresh.getAttributeNames().forEach(function (a) {
+      var v = fresh.getAttribute(a);
+      if (live.getAttribute(a) !== v) live.setAttribute(a, v);
+    });
+    if (!field) patchKids(live, fresh);
+  }
+
+  // Brings the children of element live to the children of element fresh.
+  // A child of fresh takes the child of live with its key, and without a
+  // key — the next one of its kind, and is brought to it by patch; a child
+  // without such a pair enters the page itself. The children of live left
+  // without a pair leave the page. A child of live moves only when the
+  // order of the keys has changed.
+  function patchKids(live, fresh) {
+    var cur = live.firstChild, n = fresh.firstChild, next, m, x, k;
+    var have = {}, want = {};
+    for (x = cur; x; x = x.nextSibling) if ((k = keyOf(x))) have[k] = x;
+    for (x = n; x; x = x.nextSibling) if ((k = keyOf(x))) want[k] = true;
+    for (; n; n = next) {
+      next = n.nextSibling;
+      k = keyOf(n);
+      if (k) {
+        m = have[k];
+        delete want[k];
+        if (m && kindOf(m) === kindOf(n)) delete have[k];
+        else m = null;
+      } else {
+        for (m = cur; m && (keyOf(m) || kindOf(m) !== kindOf(n)); m = m.nextSibling);
+      }
+      if (!m) {
+        fill(n);
+        live.insertBefore(n, cur);
+        continue;
+      }
+      if (m !== cur) {
+        // The children before the pair leave the page, unless one of them is
+        // the pair of a later child: then the pair moves to its place.
+        for (x = cur; x !== m && !want[keyOf(x)]; x = x.nextSibling);
+        if (x !== m) live.insertBefore(m, cur);
+        else while (cur !== m) {
+          x = cur.nextSibling;
+          live.removeChild(cur);
+          cur = x;
+        }
+      }
+      if (m === cur) cur = cur.nextSibling;
+      patch(m, n);
+    }
+    while (cur) {
+      x = cur.nextSibling;
+      live.removeChild(cur);
+      cur = x;
+    }
   }
 
   // ---- rendering
 
   function snapshot() {
-    var snap = { focus: null, anchor: null };
+    var snap = { focus: null, anchor: null, tree: null };
+    var menu = app.querySelector(".lc-tree-all");
+    if (menu) snap.tree = menu.scrollTop;
     Array.prototype.forEach.call(app.querySelectorAll("textarea[data-key]"), function (ta) {
       if (document.activeElement === ta) snap.focus = { key: ta.getAttribute("data-key"), s: ta.selectionStart, e: ta.selectionEnd };
     });
@@ -1423,17 +2029,22 @@
     window.scrollTo(window.scrollX, y);
   }
 
-  // Fields get the text of their drafts, focus and scroll position as
-  // before re-rendering.
+  // A field whose text differs from its draft gets the text of the draft,
+  // and a field that has just entered the page — its height and, if the
+  // field before it had the focus, the focus; the scroll position is as
+  // before re-rendering. The tree of the "Questions" window or the side
+  // panel keeps its scroll position, and a just opened one shows the row of
+  // the open topic.
   function restore(snap) {
     Array.prototype.forEach.call(app.querySelectorAll("textarea[data-key]"), function (ta) {
       var d = drafts[ta.getAttribute("data-key")];
-      if (d) ta.value = d.text;
-      fit(ta);
+      var differs = d ? ta.value !== d.text : !!ta.value.trim();
+      if (differs) ta.value = d ? d.text : "";
+      if (differs || !ta.style.height) fit(ta);
     });
     if (snap.focus) {
       var ta = app.querySelector('textarea[data-key="' + snap.focus.key + '"]');
-      if (ta) {
+      if (ta && document.activeElement !== ta) {
         ta.focus({ preventScroll: true });
         ta.setSelectionRange(snap.focus.s, snap.focus.e);
       }
@@ -1442,16 +2053,17 @@
       var el = app.querySelector('[data-key="' + snap.anchor.key + '"]');
       if (el) window.scrollBy(0, el.getBoundingClientRect().top - snap.anchor.top);
     }
-  }
-
-  function selecting() {
-    var sel = window.getSelection();
-    return sel && !sel.isCollapsed && app.contains(sel.anchorNode);
+    var menu = app.querySelector(".lc-tree-all");
+    if (menu) {
+      var cur = menu.querySelector(".lc-active");
+      menu.scrollTop = snap.tree != null ? snap.tree : cur ? cur.offsetTop - menu.clientHeight / 2 : 0;
+    }
   }
 
   // Claude's replies now on the screen of a visible tab become seen.
+  // Returns whether any of them was not seen before.
   function markSeen() {
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") return false;
     var changed = false;
     Array.prototype.forEach.call(app.querySelectorAll("[data-mid]"), function (e) {
       var id = e.getAttribute("data-mid");
@@ -1462,6 +2074,7 @@
       }
     });
     if (changed) saveJson(SEEN_KEY, seen);
+    return changed;
   }
 
   function updateTitle() {
@@ -1471,33 +2084,78 @@
     document.title = (n ? "(" + n + ") " : "") + base;
   }
 
+  // Re-renders the page after a change made in the page itself.
   function render() {
+    local++;
+    draw();
+  }
+
+  // Brings the page to the state: the header is built anew, the regions —
+  // only if what they are built from has changed (see region).
+  function draw() {
     if (!st) return;
-    if (selecting()) {
-      deferred = true;
-      return;
-    }
-    deferred = false;
     if (openNextReply()) return;
     var snap = snapshot();
-    app.textContent = "";
-    app.appendChild(headerEl());
-    app.appendChild(TOPIC ? topicEl() : diff ? diff.el() : rootEl());
+    var page = make("main");
+    page.appendChild(headerEl());
+    page.appendChild(region(make("div", "lc-main"), function (el) {
+      el.appendChild(TOPIC ? topicEl() : diff ? diff.el() : rootEl());
+    }));
+    document.documentElement.classList.toggle("lc-side-on", !!TOPIC && side);
+    if (TOPIC && side) page.appendChild(sideEl());
+    patchKids(app, page);
     restore(snap);
-    markSeen();
+    headHeight();
+    showLast();
+    // Replies seen just now change the marks of new replies.
+    if (markSeen()) return render();
     updateTitle();
     if (diff) diff.after();
     focusDraft();
     renderStatus();
+    // The "Quote" button follows its selection.
+    if (quoteBar && !quoteBar.hidden) checkQuote();
   }
 
-  function applyState(next) {
+  // Takes state next from the server. With ids — the ids of all topics —
+  // next has only the topics changed since the state the page has: the other
+  // topics stay the same objects. Returns whether anything the page shows,
+  // besides the status bar, has changed.
+  function take(next) {
+    var topics = next.topics, moved = true, got = {};
+    if (next.ids) {
+      next.topics.forEach(function (t) { got[t.id] = t; });
+      topics = next.ids.map(function (id) { return got[id] || byId[id]; });
+      // The page lacks a topic the server did not send: the next request gets the whole state.
+      if (!st || topics.some(function (t) { return !t; })) {
+        rev = -1;
+        return false;
+      }
+      moved = next.topics.length > 0 || next.ids.join() !== st.topics.map(function (t) { return t.id; }).join();
+    }
+    next.topics = topics;
+    var sig = JSON.stringify(Object.assign({}, next,
+      { topics: 0, ids: 0, since: 0, rev: 0, now: 0, status: 0, lastSeen: 0 }));
+    var changed = moved || sig !== meta;
     // Auto-apply fired while the page is open.
     if (st && next.autoApplied && next.autoApplied !== st.autoApplied)
       toast("No open questions left: the resolved ones were applied, the plan went to Claude");
     st = next;
     rev = next.rev;
-    index();
+    boot = next.boot || "";
+    meta = sig;
+    if (moved) {
+      shown++;
+      (next.ids ? Object.keys(got) : topics.map(function (t) { return t.id; })).forEach(function (id) {
+        stamps[id] = shown;
+      });
+      index();
+    }
+    return changed;
+  }
+
+  // Shows the state taken from the server.
+  function applyState() {
     // Marks of topics that disappeared, or were resolved or closed after
     // expanding and have no open subquestions at any depth, are erased.
     var changed = false;
@@ -1507,16 +2165,20 @@
         changed = true;
       }
     });
-    if (changed) saveJson(EXP_KEY, expanded);
+    if (changed) {
+      local++;
+      saveJson(EXP_KEY, expanded);
+    }
     // Reply drafts in topics that no longer exist are erased.
     Object.keys(drafts).forEach(function (key) {
       if (key.indexOf("reply:") === 0 && !byId[key.slice("reply:".length)]) setDraft(key, "");
     });
-    render();
+    draw();
   }
 
   function showGone(text) {
     gone = true;
+    document.documentElement.classList.remove("lc-side-on");
     renderStatus();
     app.textContent = "";
     app.appendChild(make("p", "lc-hint", typeof text === "string" ? text :
@@ -1526,7 +2188,7 @@
 
   function poll() {
     if (gone) return;
-    fetch(API + "/wait?bar=1&rev=" + rev, { cache: "no-store" })
+    fetch(API + "/wait?bar=1&delta=1&rev=" + rev + "&boot=" + boot, { cache: "no-store" })
       .then(function (r) {
         if (r.status === 410) return null;
         if (r.status === 404) throw new Error("no such session");
@@ -1535,17 +2197,19 @@
       })
       .then(function (next) {
         if (!next) {
-          showGone();
+          // The text of the "Stop discussion" button stays.
+          if (!gone) showGone();
           return;
         }
         var was = online;
         online = true;
-        if (next.rev !== rev && was && st && onlyStatus(st, next)) {
-          st = next;
-          rev = next.rev;
-          renderStatus();
-        } else if (next.rev !== rev) applyState(next);
-        else if (!was) render();
+        // A wait that ended without changes returns the state the page has.
+        var news = next.rev !== rev || !next.ids;
+        if (news && take(next)) applyState();
+        else {
+          if (news) renderStatus();
+          if (!was) render();
+        }
         setTimeout(poll, 30);
       }, function (e) {
         online = false;
@@ -1625,12 +2289,14 @@
     return TOPIC;
   }
 
-  // Closes the menus of the "Apply resolved" and "Reply" buttons without
-  // re-rendering the page, so that the click that closed them reaches its target.
+  // Closes the menus of the "Apply resolved" and "Reply" buttons and the
+  // "Questions" window without re-rendering the page, so that the click that
+  // closed them reaches its target.
   function closeMenus() {
-    if (!applyMenu && !replyMenu) return;
+    if (!applyMenu && !replyMenu && !treeMenu) return;
     applyMenu = false;
     replyMenu = null;
+    treeMenu = false;
     app.querySelectorAll(".lc-menu").forEach(function (menu) { menu.remove(); });
   }
 
@@ -1653,6 +2319,19 @@
       case "reply-menu":
         replyMenu = replyMenu === tid ? null : tid;
         applyMenu = false;
+        treeMenu = false;
+        render();
+        break;
+      case "tree-menu":
+        treeMenu = !treeMenu;
+        replyMenu = null;
+        render();
+        break;
+      case "tree-side":
+      case "tree-unside":
+        side = name === "tree-side";
+        treeMenu = false;
+        saveJson(SIDE_KEY, { on: side });
         render();
         break;
       case "reply-now":
@@ -1660,6 +2339,32 @@
         send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/messages", function () {
           return "Claude will carry it out right away and answer in the topic";
         }, true, { carryOut: true });
+        break;
+      case "diff-mode":
+        if (diff) diff.act(name, node, e);
+        else {
+          try {
+            window.localStorage.setItem(DIFF_MODE_KEY, node.getAttribute("data-mode"));
+          } catch (err) {
+            // Without storage the view stays the same.
+          }
+        }
+        app.querySelectorAll(".lc-code-diff").forEach(function (box) { box.lcDraw(); });
+        break;
+      case "code-copy":
+        navigator.clipboard.writeText(node.closest(".lc-code, .lc-diagram").querySelector("pre").textContent).then(function () {
+          toast("Copied");
+        }, failed);
+        break;
+      case "code-apply":
+        var pre = node.closest(".lc-code").querySelector("pre"), code = pre.textContent;
+        var lang = (/(?:^| )language-(\S+)/.exec(pre.firstChild.className) || ["", ""])[1];
+        var fence = "```";
+        while (code.indexOf(fence) >= 0) fence += "`";
+        post("/topics/" + tid + "/messages", {
+          text: "Apply this code to `" + pre.getAttribute("data-file") + "`:\n\n" + fence + lang + "\n" + code + "\n" + fence,
+          carryOut: true
+        }).then(function () { toast("Claude will apply it right away and answer in the topic"); }, failed);
         break;
       case "resolve":
         send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/resolve", function (text) {
@@ -1687,13 +2392,22 @@
         render();
         break;
       case "auto-apply-on":
+      case "auto-apply-once":
       case "auto-apply-off":
+        var once = name === "auto-apply-once", armed = st.autoApplyOnce;
         applyMenu = false;
         render();
-        request("/api/sessions/" + encodeURIComponent(SID) + "/auto-apply", { on: name === "auto-apply-on" }).then(function (r) {
+        request("/api/sessions/" + encodeURIComponent(SID) + "/auto-apply", { on: name !== "auto-apply-off", once: once }).then(function (r) {
           toast(r.applied ? "No open questions: the resolved ones were applied, the plan went to Claude" :
+            once ? "The resolved ones will apply once when all questions are resolved" :
             r.autoApply ? "The resolved ones will apply when all questions are resolved; new sessions start with auto-apply" :
-            "Auto-apply cancelled; new sessions start without it");
+            armed ? "Auto-apply cancelled" : "Auto-apply cancelled; new sessions start without it");
+        }, failed);
+        break;
+      case "stop-session":
+        if (!window.confirm("Stop the discussion? Claude stops listening and lists the decisions and the open questions in the chat. The questions are deleted from the server, and the pages take no messages until /live-comments:start in the chat starts a new discussion.")) return;
+        request("/api/sessions/" + encodeURIComponent(SID) + "/stop").then(function () {
+          showGone("The discussion is stopped: Claude lists the outcome in the chat, the questions are deleted. A new discussion starts with /live-comments:start in the chat.");
         }, failed);
         break;
       case "close":
@@ -1711,13 +2425,22 @@
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (!t.closest) return;
-    if (!t.closest(".lc-menu, [data-act=apply-menu], [data-act=reply-menu]")) closeMenus();
+    if (!t.closest(".lc-menu, [data-act=apply-menu], [data-act=reply-menu], [data-act=tree-menu]")) closeMenus();
+    // Before links: the button of an image inside a link does not open the link.
+    var full = t.closest("[data-act=full]");
+    if (full && app.contains(full)) {
+      e.preventDefault();
+      showFull(full);
+      return;
+    }
     var file = t.closest("a[data-file]");
     if (file) {
       e.preventDefault();
       openFile(file);
       return;
     }
+    var dr = t.closest("a[data-draft]");
+    if (dr) markFocus(dr.getAttribute("data-draft"));
     if (t.closest("a")) return;
     var el = t.closest("[data-act]");
     if (el && app.contains(el)) {
@@ -1747,10 +2470,21 @@
   }
 
   // Text of selection r inside one code block as a fenced code block in the
-  // block's language, and the lines of a diff quote as a diff block. Null
-  // for a selection outside code blocks.
+  // block's language, and the lines of a diff quote and of a diff block of a
+  // message as a diff block. Null for a selection outside code blocks.
   function codeQuote(r, text) {
     var c = r.commonAncestorContainer;
+    var view = (c.nodeType === 1 ? c : c.parentNode).closest(".lc-mdiff");
+    if (view && app.contains(view)) {
+      var picked = {};
+      [].forEach.call(view.querySelectorAll("td[data-row]"), function (td) {
+        if (rangeIn(r, td).toString() || !td.textContent && r.intersectsNode(td)) picked[td.getAttribute("data-row")] = 1;
+      });
+      text = view.lcRows.filter(function (row, i) { return picked[i]; }).map(function (row) {
+        return row.t === "@" ? row.s : row.t + row.s;
+      }).join("\n");
+      return "```diff\n" + text + "\n```";
+    }
     var pre = (c.nodeType === 1 ? c : c.parentNode).closest("pre");
     if (!pre || !app.contains(pre)) return null;
     var code = pre.querySelector("code");
@@ -1789,8 +2523,12 @@
   // selection to the topic's reply field as a quote, in Markdown if it is
   // copied so. quoteText is the selection's text with its line breaks.
   var quoteBar = null, quoteRange = null, quoteText = "";
+  // While the mouse button is held, the button is hidden, so the selection
+  // being dragged does not run into it.
+  var pressed = false;
 
   function checkQuote() {
+    if (pressed) return;
     var sel = window.getSelection();
     var r = sel.rangeCount && !sel.isCollapsed && sel.toString().trim() ? sel.getRangeAt(0) : null;
     quoteRange = r && quoteField(r) ? r.cloneRange() : null;
@@ -1823,26 +2561,30 @@
     var text = selectedMd(r);
     if (text == null) text = codeQuote(r, plain);
     if (text == null) text = plain;
-    var key = ta.getAttribute("data-key");
     window.getSelection().removeAllRanges();
     quoteBar.hidden = true;
     quoteRange = null;
-    // A render put off by the selection goes first, since it replaces the field.
-    if (deferred) render();
-    ta = app.querySelector('textarea[data-key="' + key + '"]');
-    if (!ta) return;
     ta.focus({ preventScroll: true });
     ta.setSelectionRange(ta.value.length, ta.value.length);
     insertQuote(ta, quoteMd(text));
     ta.scrollIntoView({ block: "nearest" });
   }
 
-  document.addEventListener("mouseup", function () { setTimeout(checkQuote, 0); });
+  document.addEventListener("mousedown", function (e) {
+    if (e.button !== 0 || quoteBar && quoteBar.contains(e.target)) return;
+    pressed = true;
+    if (quoteBar) quoteBar.hidden = true;
+  });
+
+  document.addEventListener("mouseup", function () {
+    pressed = false;
+    setTimeout(checkQuote, 0);
+  });
 
   var quoteTimer = null;
   document.addEventListener("selectionchange", function () {
     clearTimeout(quoteTimer);
-    quoteTimer = setTimeout(checkQuote, 250);
+    if (!pressed) quoteTimer = setTimeout(checkQuote, 250);
   });
 
   // ---- images pasted into fields: uploaded to the session's images, they go
@@ -2072,6 +2814,7 @@
     list.push(["Ctrl+Enter", "send the field's text, in a topic like “Reply”"]);
     list.push(["Ctrl+Z", "right after pasting into a field — the text without the quote"]);
     if (diff) list.push(["Ctrl+P", "file list with search: ↑↓ choose, Enter opens, Esc closes"]);
+    if (TOPIC) list.push(["Esc", "hide the first message shown under the pointer at the topic title"]);
     list.push(["?", "this help; Esc or a click outside closes it"]);
     return list;
   }
@@ -2104,19 +2847,36 @@
 
   // ? opens and closes the help, except while typing in a field: there it is
   // a question mark. The key is the one with "?" in the current layout, or
-  // the physical "/?" key. Esc closes the help.
+  // the physical "/?" key. Esc closes the help. Over the full screen window
+  // Esc closes the window, and the help does not open under it.
   document.addEventListener("keydown", function (e) {
     var open = keysEl && !keysEl.hidden;
+    if (fullSrc) {
+      if (e.key === "Escape") showFull(null);
+      return;
+    }
     if (e.key === "Escape" && open) {
       showKeys(false);
       return;
     }
-    if (e.key === "Escape") closeMenus();
+    if (e.key === "Escape") {
+      closeMenus();
+      hidePop();
+    }
     if (!(e.key === "?" || e.code === "Slash" && e.shiftKey) || e.ctrlKey || e.metaKey || e.altKey) return;
     var a = document.activeElement;
     if (a && (a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.isContentEditable)) return;
     e.preventDefault();
     showKeys(!open);
+  });
+
+  // The pointer has left the title of the topic in the header: the next
+  // time it shows the first message again.
+  app.addEventListener("mouseout", function (e) {
+    var box = popOff && e.target.closest && e.target.closest(".lc-crumb-topic");
+    if (!box || box.contains(e.relatedTarget)) return;
+    popOff = false;
+    box.classList.remove("lc-pop-off");
   });
 
   // Typed text becomes the field's draft right away.
@@ -2138,10 +2898,8 @@
   // With a different window width the text wraps differently.
   window.addEventListener("resize", function () {
     Array.prototype.forEach.call(app.querySelectorAll("textarea"), fit);
-  });
-
-  document.addEventListener("selectionchange", function () {
-    if (deferred && !selecting()) render();
+    headHeight();
+    if (pan) (pan.fitted ? fitFull : placeFull)();
   });
 
   document.addEventListener("visibilitychange", function () {
@@ -2154,7 +2912,7 @@
       SID: SID, API: API, app: app, make: make, button: button, toast: toast, failed: failed,
       request: request, post: post, render: render, titleOf: titleOf, status: status, unseenOf: unseenOf,
       draft: function (key) { return drafts[key] || null; }, setDraft: setDraft, uploading: uploading,
-      bodyEl: bodyEl, linesText: linesText,
+      bodyEl: bodyEl, linesText: linesText, patchKids: patchKids, region: region, workOf: workOf, stampOf: stampOf,
       topics: function () { return st ? st.topics : []; }
     });
   }

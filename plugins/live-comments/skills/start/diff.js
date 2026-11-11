@@ -12,6 +12,35 @@
   // and its discussion is shown under these lines. The page is drawn by
   // app.js: it calls LiveCommentsDiff with its own functions (lc) and embeds
   // el() into the page.
+  // The layout of diff lines rows into table rows in view mode. lines — the
+  // rows: rows — the indexes of diff lines the row shows, blk — the number of
+  // the change block (others have -1). A block is a run of "-" and "+" lines;
+  // blocks — the line indexes of each block, lineOf — the table row of each
+  // diff line. Inline, a table row is one diff line; side by side, the lines
+  // of a block go in pairs: the i-th removed on the left (del), the i-th
+  // added on the right (add).
+  function layout(rows, mode) {
+    var lines = [], blocks = [], lineOf = {};
+    for (var i = 0; i < rows.length;) {
+      if (rows[i].t !== "+" && rows[i].t !== "-") {
+        lines.push({ rows: [i], blk: -1 });
+        i++;
+        continue;
+      }
+      var run = [], dels = [], adds = [];
+      for (; i < rows.length && (rows[i].t === "+" || rows[i].t === "-"); i++) {
+        run.push(i);
+        (rows[i].t === "-" ? dels : adds).push(i);
+      }
+      var b = blocks.push(run) - 1;
+      if (mode === "inline") run.forEach(function (k) { lines.push({ rows: [k], blk: b }); });
+      else for (var k = 0; k < Math.max(dels.length, adds.length); k++)
+        lines.push({ rows: [dels[k], adds[k]].filter(function (x) { return x != null; }), del: dels[k], add: adds[k], blk: b });
+    }
+    lines.forEach(function (l, n) { l.rows.forEach(function (k) { lineOf[k] = n; }); });
+    return { lines: lines, blocks: blocks, lineOf: lineOf };
+  }
+
   window.LiveCommentsDiff = function (lc) {
     var make = lc.make;
     var params = new URLSearchParams(location.search);
@@ -41,7 +70,7 @@
     // one column. The choice is remembered in the browser.
     var MODE_KEY = "lc-diff-mode";
     var mode = load(MODE_KEY, "split") === "inline" ? "inline" : "split";
-    // Layouts of file diffs from the last render: path → layoutOf.
+    // Layouts of the file diffs shown: path → layout.
     var lays = {};
     // Collapsed files: file key (keyOf) → true or false, while the page is open.
     var folded = {};
@@ -487,14 +516,15 @@
     // contain all words of the search, as trees. The chosen row stays chosen
     // while it is in the list, otherwise the first file is chosen. reveal —
     // scroll the list to the chosen row; otherwise the scroll position stays.
+    // Only the rows that differ change (see patchKids in app.js).
     function renderList(reveal) {
-      listHead.textContent = "";
-      listHead.appendChild(make("span", "lc-scm-branch", repo ? "⎇ " + repo.branch : ""));
-      listHead.appendChild(iconBtn("×", "files", "Close the file list — Esc"));
-      var top = listTree.scrollTop;
-      listTree.textContent = "";
+      var head = make("div"), tree = make("div");
+      head.appendChild(make("span", "lc-scm-branch", repo ? "⎇ " + repo.branch : ""));
+      head.appendChild(iconBtn("×", "files", "Close the file list — Esc"));
+      lc.patchKids(listHead, head);
       if (!repo) {
-        listTree.appendChild(make("p", "lc-hint", "Loading changes…"));
+        tree.appendChild(make("p", "lc-hint", "Loading changes…"));
+        lc.patchKids(listTree, tree);
         return;
       }
       var words = listWords();
@@ -517,11 +547,11 @@
           iconBtn("+", "stage-all", "Stage all changes"));
         gh.appendChild(make("span", "lc-count", words.length ? p.found.length + " of " + p.g.files.length :
           String(p.g.files.length)));
-        listTree.appendChild(gh);
-        p.rows.forEach(function (r) { listTree.appendChild(r.kind === "dir" ? dirEl(r, words) : listFileEl(r, words)); });
-        if (!p.found.length) listTree.appendChild(make("div", "lc-file lc-none", p.g.files.length ? "No matches" : "No changes"));
+        tree.appendChild(gh);
+        p.rows.forEach(function (r) { tree.appendChild(r.kind === "dir" ? dirEl(r, words) : listFileEl(r, words)); });
+        if (!p.found.length) tree.appendChild(make("div", "lc-file lc-none", p.g.files.length ? "No matches" : "No changes"));
       });
-      listTree.scrollTop = top;
+      lc.patchKids(listTree, tree);
       var a = reveal && listTree.querySelector(".lc-active");
       if (a) a.scrollIntoView({ block: "nearest" });
     }
@@ -641,33 +671,8 @@
 
     // ---- file diff
 
-    // The layout of diff d into table rows. lines — the rows: rows — the
-    // indexes of diff lines the row shows, blk — the number of the change
-    // block (others have -1). A block is a run of "-" and "+" lines; blocks —
-    // the line indexes of each block, lineOf — the table row of each diff
-    // line. Inline, a table row is one diff line; side by side, the lines of
-    // a block go in pairs: the i-th removed on the left (del), the i-th added
-    // on the right (add).
     function layoutOf(d) {
-      var rows = d.rows, lines = [], blocks = [], lineOf = {};
-      for (var i = 0; i < rows.length;) {
-        if (rows[i].t !== "+" && rows[i].t !== "-") {
-          lines.push({ rows: [i], blk: -1 });
-          i++;
-          continue;
-        }
-        var run = [], dels = [], adds = [];
-        for (; i < rows.length && (rows[i].t === "+" || rows[i].t === "-"); i++) {
-          run.push(i);
-          (rows[i].t === "-" ? dels : adds).push(i);
-        }
-        var b = blocks.push(run) - 1;
-        if (mode === "inline") run.forEach(function (k) { lines.push({ rows: [k], blk: b }); });
-        else for (var k = 0; k < Math.max(dels.length, adds.length); k++)
-          lines.push({ rows: [dels[k], adds[k]].filter(function (x) { return x != null; }), del: dels[k], add: adds[k], blk: b });
-      }
-      lines.forEach(function (l, n) { l.rows.forEach(function (k) { lineOf[k] = n; }); });
-      return { lines: lines, blocks: blocks, lineOf: lineOf };
+      return layout(d.rows, mode);
     }
 
     function numEl(num, cls) {
@@ -704,38 +709,44 @@
       return td;
     }
 
+    // Table row n of diff d. Its cells are built when the row enters the
+    // page (see patchKids in app.js): the row of the same diff, group, view
+    // and number that is already there stays instead.
     function lineEl(d, lay, line, n) {
       var r = d.rows[line.rows[0]];
       var tr = make("tr", "lc-dr");
       tr.setAttribute("data-line", n);
       tr.setAttribute("data-rows", line.rows.join(","));
-      if (r.t === "@") {
-        tr.className += " lc-dr-hunk";
-        var h = make("td", "lc-code", r.s);
-        h.colSpan = 5;
-        tr.appendChild(h);
-        return tr;
-      }
-      var prev = lay.lines[n - 1];
-      var first = line.blk >= 0 && !d.binary && (!prev || prev.blk !== line.blk);
-      if (mode === "inline") {
-        tr.className += " lc-dr-" + ({ "+": "add", "-": "del", " ": "ctx" })[r.t];
-        tr.appendChild(numEl(r.t === "+" ? "" : r.o, ""));
-        tr.appendChild(numEl(r.t === "-" ? "" : r.n, ""));
-        tr.appendChild(midEl(line, first));
-        tr.appendChild(make("td", "lc-sign", r.t === " " ? "" : r.t));
-        tr.appendChild(codeEl(r, ""));
-      } else {
-        var del = line.blk < 0 ? r : line.del != null ? d.rows[line.del] : null;
-        var add = line.blk < 0 ? r : line.add != null ? d.rows[line.add] : null;
-        var dc = line.blk < 0 ? "" : del ? " lc-cdel" : " lc-cfill";
-        var ac = line.blk < 0 ? "" : add ? " lc-cadd" : " lc-cfill";
-        tr.appendChild(numEl(del ? del.o : "", dc));
-        tr.appendChild(codeEl(del, dc));
-        tr.appendChild(midEl(line, first));
-        tr.appendChild(numEl(add ? add.n : "", ac));
-        tr.appendChild(codeEl(add, ac));
-      }
+      tr.lcSig = [d.hash, staged, mode, n].join("\n");
+      tr.lcFill = function () {
+        if (r.t === "@") {
+          tr.className += " lc-dr-hunk";
+          var h = make("td", "lc-code", r.s);
+          h.colSpan = 5;
+          tr.appendChild(h);
+          return;
+        }
+        var prev = lay.lines[n - 1];
+        var first = line.blk >= 0 && !d.binary && (!prev || prev.blk !== line.blk);
+        if (mode === "inline") {
+          tr.className += " lc-dr-" + ({ "+": "add", "-": "del", " ": "ctx" })[r.t];
+          tr.appendChild(numEl(r.t === "+" ? "" : r.o, ""));
+          tr.appendChild(numEl(r.t === "-" ? "" : r.n, ""));
+          tr.appendChild(midEl(line, first));
+          tr.appendChild(make("td", "lc-sign", r.t === " " ? "" : r.t));
+          tr.appendChild(codeEl(r, ""));
+        } else {
+          var del = line.blk < 0 ? r : line.del != null ? d.rows[line.del] : null;
+          var add = line.blk < 0 ? r : line.add != null ? d.rows[line.add] : null;
+          var dc = line.blk < 0 ? "" : del ? " lc-cdel" : " lc-cfill";
+          var ac = line.blk < 0 ? "" : add ? " lc-cadd" : " lc-cfill";
+          tr.appendChild(numEl(del ? del.o : "", dc));
+          tr.appendChild(codeEl(del, dc));
+          tr.appendChild(midEl(line, first));
+          tr.appendChild(numEl(add ? add.n : "", ac));
+          tr.appendChild(codeEl(add, ac));
+        }
+      };
       return tr;
     }
 
@@ -744,56 +755,59 @@
     }
 
     // The lines of diff d with discussions under them and questions on lines
-    // that are no longer in the diff.
+    // that are no longer in the diff. A region (see region in app.js) built
+    // from the diff, the group, the view, and from the questions on the
+    // file's lines with Claude's work on them.
     function diffBody(d) {
-      var body = make("div", "lc-dfile-body");
-      d.info.forEach(function (line) { body.appendChild(make("div", "lc-dinfo", line)); });
-      var lay = lays[d.path] = layoutOf(d);
-      // Discussions and the new question field stand under the table row where their lines end.
-      var at = {}, loose = [];
-      fileTopics(d.path).forEach(function (t) {
-        var i = placeOf(d, t.anchor);
-        if (i < 0) loose.push(t);
-        else (at[lay.lineOf[i]] = at[lay.lineOf[i]] || []).push(t);
-      });
-      var draftRow = draft && draft.file === d.path ? placeOf(d, draft) : -1;
-      var draftAt = draftRow < 0 ? -1 : lay.lineOf[draftRow];
-      if (loose.length) {
-        var lb = make("div", "lc-dloose");
-        lb.appendChild(make("div", "lc-hint", "Questions on lines that are not in this diff:"));
-        loose.forEach(function (t) {
-          var q = make("pre", "lc-dquote");
-          (t.anchor.rows || []).forEach(function (r) { q.appendChild(make("div", "lc-dq lc-dq-" + qkind(r), r)); });
-          var wrap = make("div", "lc-dloose-item");
-          wrap.appendChild(make("div", "lc-src", lc.linesText(t.anchor)));
-          wrap.appendChild(q);
-          wrap.appendChild(cardEl(t));
-          lb.appendChild(wrap);
+      var asked = fileTopics(d.path);
+      return lc.region(make("div", "lc-dfile-body"), function (body) {
+        d.info.forEach(function (line) { body.appendChild(make("div", "lc-dinfo", line)); });
+        var lay = lays[d.path] = layoutOf(d);
+        // Discussions and the new question field stand under the table row where their lines end.
+        var at = {}, loose = [];
+        asked.forEach(function (t) {
+          var i = placeOf(d, t.anchor);
+          if (i < 0) loose.push(t);
+          else (at[lay.lineOf[i]] = at[lay.lineOf[i]] || []).push(t);
         });
-        body.appendChild(lb);
-      }
-      if (!d.rows.length) {
-        body.appendChild(make("p", "lc-hint", d.binary ? "Binary file: lines are not shown." : "No line changes."));
-        return body;
-      }
-      var table = make("table", "lc-dtable lc-dt-" + mode);
-      table.setAttribute("data-path", d.path);
-      var cols = make("colgroup");
-      (mode === "inline" ? ["lc-c-ln", "lc-c-ln", "lc-c-mid", "lc-c-sign", "lc-c-code"] :
-        ["lc-c-ln", "lc-c-code", "lc-c-mid", "lc-c-ln", "lc-c-code"])
-        .forEach(function (c) { cols.appendChild(make("col", c)); });
-      table.appendChild(cols);
-      // Each change block is a separate tbody: hovering over it highlights the block buttons.
-      var tb = null;
-      lay.lines.forEach(function (line, n) {
-        if (!tb || line.blk !== lay.lines[n - 1].blk) tb = table.appendChild(make("tbody", line.blk >= 0 ? "lc-blk" : ""));
-        tb.appendChild(lineEl(d, lay, line, n));
-        (at[n] || []).forEach(function (t) { tb.appendChild(extraRow(cardEl(t))); });
-        if (n === draftAt) tb.appendChild(extraRow(draftEl()));
-      });
-      body.appendChild(table);
-      if (draft && draft.file === d.path && draftAt < 0) body.appendChild(draftEl());
-      return body;
+        var draftRow = draft && draft.file === d.path ? placeOf(d, draft) : -1;
+        var draftAt = draftRow < 0 ? -1 : lay.lineOf[draftRow];
+        if (loose.length) {
+          var lb = make("div", "lc-dloose");
+          lb.appendChild(make("div", "lc-hint", "Questions on lines that are not in this diff:"));
+          loose.forEach(function (t) {
+            var q = make("pre", "lc-dquote");
+            (t.anchor.rows || []).forEach(function (r) { q.appendChild(make("div", "lc-dq lc-dq-" + qkind(r), r)); });
+            var wrap = make("div", "lc-dloose-item");
+            wrap.appendChild(make("div", "lc-src", lc.linesText(t.anchor)));
+            wrap.appendChild(q);
+            wrap.appendChild(cardEl(t));
+            lb.appendChild(wrap);
+          });
+          body.appendChild(lb);
+        }
+        if (!d.rows.length) {
+          body.appendChild(make("p", "lc-hint", d.binary ? "Binary file: lines are not shown." : "No line changes."));
+          return;
+        }
+        var table = make("table", "lc-dtable lc-dt-" + mode);
+        table.setAttribute("data-path", d.path);
+        var cols = make("colgroup");
+        (mode === "inline" ? ["lc-c-ln", "lc-c-ln", "lc-c-mid", "lc-c-sign", "lc-c-code"] :
+          ["lc-c-ln", "lc-c-code", "lc-c-mid", "lc-c-ln", "lc-c-code"])
+          .forEach(function (c) { cols.appendChild(make("col", c)); });
+        table.appendChild(cols);
+        // Each change block is a separate tbody: hovering over it highlights the block buttons.
+        var tb = null;
+        lay.lines.forEach(function (line, n) {
+          if (!tb || line.blk !== lay.lines[n - 1].blk) tb = table.appendChild(make("tbody", line.blk >= 0 ? "lc-blk" : ""));
+          tb.appendChild(lineEl(d, lay, line, n));
+          (at[n] || []).forEach(function (t) { tb.appendChild(extraRow(cardEl(t))); });
+          if (n === draftAt) tb.appendChild(extraRow(draftEl()));
+        });
+        body.appendChild(table);
+        if (draft && draft.file === d.path && draftAt < 0) body.appendChild(draftEl());
+      }, [d.hash, staged, mode, asked.length ? lc.workOf() + lc.stampOf(asked) : ""]);
     }
 
     // A file in the diff feed: a header with the collapse arrow, file buttons
@@ -863,7 +877,6 @@
       var wrap = make("div", "lc-diff");
       wrap.appendChild(toolbarEl());
       if (error) wrap.appendChild(make("p", "lc-hint lc-err", error));
-      lays = {};
       if (!files) wrap.appendChild(make("p", "lc-hint", "Loading diffs…"));
       else if (!files.length)
         wrap.appendChild(make("p", "lc-hint", staged ? "No staged changes." :
@@ -1095,4 +1108,6 @@
 
     return { el: el, act: act, after: after, anchor: function () { return draft; } };
   };
+  // The diff blocks of messages are laid out by app.js the same way.
+  window.LiveCommentsDiff.layout = layout;
 })();

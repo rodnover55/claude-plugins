@@ -83,8 +83,8 @@ The server version `VERSION` grows when its API changes, and `cm.py open` refuse
 
 ## The page
 
-The pages get the session state by long polling `/api/<session>/wait?bar=1&rev=…`.
-- If the new state differs from the current one only in `status`, `rev` and the server time `now` (`onlyStatus`), the page redraws only the bar. The rest of the page is not re-rendered, so the bar updates while Claude works do not touch the input fields, the focus, the selection and the scroll position.
+The pages get the session state by long polling `/api/<session>/wait?bar=1&delta=1&rev=…&boot=…`: with `delta` the server sends only the topics changed since state `rev` (`Store.delta`), and the page keeps the rest.
+- If nothing but `status`, `rev` and the server time `now` has changed (`take`), the page redraws only the bar. The rest of the page is not re-rendered, so the bar updates while Claude works do not touch the input fields, the focus, the selection and the scroll position.
 - The bar is a `footer.lc-sbar` outside `#lc-app`, fixed at the bottom of the window. The bottom padding of `#lc-app` keeps the end of the page above it; the body class `lc-has-sbar` lifts the toasts above the bar.
 - `renderStatus` draws the items in order. `sbBlock` turns a block into an element; an unknown block, an unknown style name and a link without an `http://` or `https://` address are skipped or shown as text. All text goes in through `textContent`: a bar cannot insert HTML into the page.
 - A timer redraws the bar every 30 seconds, so `countdown` and `age` stay current without new data.
