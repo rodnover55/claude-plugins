@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs a live-comments Python script with python3 from the standard PATH of the
+# system (getconf PATH) on Linux and macOS, not with the python3 that a version
+# manager such as mise or pyenv picks by the current directory through its shims
+# on PATH. The script gets the absolute path of python3 as sys.executable, so the
+# server it starts runs on the same python3.
+py=$(command -pv python3) || {
+  echo "python3 is not found in the standard PATH of the system ($(getconf PATH))" >&2
+  exit 127
+}
+exec "$py" "$@"

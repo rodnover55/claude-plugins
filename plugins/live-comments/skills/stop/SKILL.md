@@ -2,14 +2,16 @@
 name: stop
 description: "Finish the live-comments discussion of the current Claude Code session: stop waiting for the discussion, disconnect the session from the live-comments server and close its discussion there, then list the outcome in the chat — the decisions and the questions left without an answer or a decision. The server stops when no connected sessions are left. Use when the user asks to finish, stop, end or close the live discussion of the session, or invokes /live-comments:stop."
 allowed-tools:
-  - Bash(python3 ${CLAUDE_SKILL_DIR}/../start/cm.py *)
+  - Bash(sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/../start/cm.py *)
 ---
 
 # live-comments:stop — finish the discussion of a session
 
 The discussion of a session is started by the `start` skill (`/live-comments:start`). This skill finishes it. The “Stop discussion” button on the session page finishes it from the browser: then the output of `wait` already has what `leave` prints, and only step 3 is left.
 
-`CM` below is `python3 ${CLAUDE_SKILL_DIR}/../start/cm.py`. The commands take the session from `CLAUDE_CODE_SESSION_ID`.
+Finishing the discussion closes only the discussion on the server and does not change Claude's work. Carry on the work in progress, such as the plan of “Apply resolved” or a task from the chat, without asking the user, and give its results in the chat without `CM activity`.
+
+`CM` below is `sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/../start/cm.py`. The commands take the session from `CLAUDE_CODE_SESSION_ID`.
 
 1. Stop the background `CM wait` task of the session, if it is running: otherwise its end would wake you up after the discussion is closed.
 2. Close the session: `CM leave`. The command disconnects the session, deletes its discussion from the server and prints it in full: the tree of topics with states and every topic. This is the only copy. If no other connected sessions are left, the server stops. Do not stop it with `pkill -f`: the pattern also matches the command line of the shell itself.

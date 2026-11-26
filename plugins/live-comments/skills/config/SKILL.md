@@ -3,7 +3,7 @@ name: config
 description: "Change the look of the live-comments discussion pages at the user's request in free text, such as “поменяй моноширинный шрифт на Terminus”, “сделай акцент зелёным” or “всегда тёмная тема”: the fonts — the font of the text and the monospace font of code, the changes page and the status bar — and the color theme — the colors of the palette in the light and the dark scheme and the scheme the pages always use. A font is either installed in the system or embedded from a .ttf, .otf, .woff or .woff2 file that the live-comments server hands to the pages. The settings and the font files stay in the user's own directories, outside the plugin. Use when the user asks to change, show or reset the fonts, colors or theme of the discussion pages, or invokes /live-comments:config."
 argument-hint: "[what to change, in free text]"
 allowed-tools:
-  - Bash(python3 ${CLAUDE_SKILL_DIR}/config.py *)
+  - Bash(sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/config.py *)
 ---
 
 # Settings of the live-comments pages
@@ -12,7 +12,7 @@ The argument is the user's request in free text: what to show, change or reset. 
 
 The settings are the user's own files in `~/.config/live-comments/` (`$XDG_CONFIG_HOME/live-comments/` when `XDG_CONFIG_HOME` is set), not part of the plugin; never put them in the plugin or a repository. The pages take the settings when loaded: after a change, the open pages need a reload.
 
-`CONFIG` below is `python3 ${CLAUDE_SKILL_DIR}/config.py`:
+`CONFIG` below is `sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/config.py`:
 - `CONFIG` — the fonts and the theme;
 - `CONFIG font set ROLE FAMILY [--file FILE]` — the font of a role; with `--file` the file is checked and copied;
 - `CONFIG font reset [ROLE]` — the default font of a role, of all roles without `ROLE`;
@@ -21,7 +21,7 @@ The settings are the user's own files in `~/.config/live-comments/` (`$XDG_CONFI
 - `CONFIG theme scheme auto|light|dark` — the scheme of the pages; `auto` follows the system;
 - `CONFIG theme reset [NAME...]` — the default colors `NAME`; without `NAME`, all colors and the scheme.
 
-After every command, tell the user what the settings now are, from its output, and that the open pages show them after a reload. If the output says the server is an older version, the server has to be restarted: `python3 ${CLAUDE_SKILL_DIR}/../start/cm.py stop`, then `/live-comments:start` again.
+After every command, tell the user what the settings now are, from its output, and that the open pages show them after a reload. If the output says the server is an older version, the server has to be restarted: `sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/../start/cm.py stop`, then `/live-comments:start` again.
 
 ## Fonts
 

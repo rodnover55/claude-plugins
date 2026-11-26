@@ -161,7 +161,7 @@ Ask Claude in your own words, or run `/live-comments:config` with the request, f
 ### Requirements
 
 - Linux or macOS
-- Python 3.8+ available as `python3`
+- Python 3.8+ as `python3` in the standard `PATH` of the system (`getconf PATH`)
 - git
 - A browser on the same machine: the server listens on `http://127.0.0.1:8765`
 

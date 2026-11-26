@@ -374,6 +374,17 @@ class StableTest(PageTest):
         self.assertEqual(browser.js("return document.querySelectorAll('.lc-msg.lc-user .lc-md')[1].textContent"),
                          "a reply of the user")
 
+    def test_reply_in_a_subquestion_opens_it_with_the_message(self):
+        self.page("/" + self.tid, "textarea[data-key]")
+        self.press("textarea[data-key]")
+        browser.keys("a reply of the user")
+        self.press("button[data-act=reply-menu]")
+        self.press("button[data-act=reply-sub]")
+        browser.wait("return document.querySelectorAll('.lc-msg .lc-branch li').length === 1")
+        self.assertEqual(browser.js("return document.querySelector('textarea[data-key]').value"), "")
+        subs = [t for t in server.get(f"/api/{self.sid}/wait?rev=-1")["topics"] if t["parent"] == self.tid]
+        self.assertEqual([[m["author"], m["text"]] for t in subs for m in t["messages"]], [["user", "a reply of the user"]])
+
     def test_scroll_position_stays(self):
         self.page("/" + self.tid, ".lc-msg.lc-claude")
         for y in (400, 100000):
@@ -468,6 +479,21 @@ class DiffBlockTest(PageTest):
                          ["4", "", "-", "old line", "", "4", "+", "new line"])
         self.assertEqual(self.cells(".lc-msg .lc-code-diff button.lc-on"), ["Inline", "Inline"])
         self.same_after_reload()
+
+    def test_apply_button_sends_the_block_to_carry_out_now(self):
+        self.assertEqual(self.cells(".lc-msg .lc-code-diff button[data-act=code-apply]"), ["Apply"])
+        self.press(".lc-claude .lc-code-diff button[data-act=code-apply]")
+        browser.wait("return document.querySelectorAll('.lc-msg .lc-mdiff').length === 3")
+        sent = server.get(f"/api/{self.sid}/wait?rev=-1")["topics"][0]["messages"][-1]
+        self.assertEqual(sent["text"], "Apply this diff:\n\n" + DIFF_BLOCK.split("\n\n", 1)[1].strip())
+        self.assertTrue(sent["carryOut"])
+        # A block with the path of its file names the file.
+        self.reply(self.tid, DIFF_BLOCK.replace("```diff", "```diff src/app.py"))
+        browser.wait("return document.querySelectorAll('.lc-msg .lc-mdiff').length === 4")
+        self.press(".lc-code-diff:has(.lc-code-file:not(:empty)) button[data-act=code-apply]")
+        browser.wait("return document.querySelectorAll('.lc-msg .lc-mdiff').length === 5")
+        sent = server.get(f"/api/{self.sid}/wait?rev=-1")["topics"][0]["messages"][-1]
+        self.assertEqual(sent["text"].split("\n")[0], "Apply this diff to `src/app.py`:")
 
     def test_blocks_stay_on_update(self):
         browser.js(KEEP, ".lc-msg .lc-mdiff, .lc-msg .lc-mdiff td")

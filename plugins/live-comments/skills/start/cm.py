@@ -146,7 +146,7 @@ PORT = 8765
 ORIGIN = f"http://{HOST}:{PORT}"
 # The address of an image of a session in the text of a message: 1 — the session, 2 — the name.
 IMAGE_URL = re.compile(re.escape(ORIGIN) + r"/api/([A-Za-z0-9_-]{1,80})/images/(i[0-9a-f]{1,40}\.(?:png|jpg|gif|webp|avif|svg))")
-VERSION = 39
+VERSION = 40
 STATIC = {"app.js": "text/javascript", "app.css": "text/css", "diff.js": "text/javascript",
           "embed.js": "text/javascript", "embed.css": "text/css"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -605,13 +605,15 @@ def git(repo, *args, data=b"", ok=(0,)):
 
 
 def git_status(repo):
-    """Returns the changes of repository repo: the branch and the files; a
-    file has its path from the repository root and the status letters in the
-    index (index) and in the working tree (work), as in git status --porcelain."""
+    """Returns the changes of repository repo: the branch, the HEAD commit
+    (head, empty without commits) and the files; a file has its path from
+    the repository root and the status letters in the index (index) and in
+    the working tree (work), as in git status --porcelain."""
     out = git(repo, "status", "--porcelain=v1", "-z", "-uall", "--no-renames").decode("utf-8", "replace")
     files = [{"path": e[3:], "index": e[0], "work": e[1]} for e in out.split("\0") if len(e) > 3]
     branch = git(repo, "symbolic-ref", "--short", "-q", "HEAD", ok=(0, 1)).decode().strip()
-    return {"repo": repo, "branch": branch or "detached HEAD", "files": files}
+    head = git(repo, "rev-parse", "-q", "--verify", "HEAD", ok=(0, 1)).decode().strip()
+    return {"repo": repo, "branch": branch or "detached HEAD", "head": head, "files": files}
 
 
 def git_path(path):
@@ -681,9 +683,10 @@ def group_diffs(repo, staged):
     changes (staged) or working tree changes, in git status order. A file's
     diff is recomputed only if HEAD, the index or (for the working tree) the
     file itself changed since the last time."""
-    files = [f["path"] for f in git_status(repo)["files"]
+    status = git_status(repo)
+    files = [f["path"] for f in status["files"]
              if (f["index"] not in " ?" if staged else f["work"] != " ")]
-    head = git(repo, "rev-parse", "-q", "--verify", "HEAD", ok=(0, 1)).strip()
+    head = status["head"]
     index = stat_of(Path(repo) / git(repo, "rev-parse", "--git-path", "index").decode().strip())
     out = []
     for path in files:
@@ -1485,7 +1488,9 @@ def make_handler(store, feed):
             """A new top-level topic from the user ({text, anchor}) or topics
             from a list of questions ({questions, author}): from Claude, and
             with author "user" on behalf of the user. A subquestion of a
-            fragment is opened by branch."""
+            fragment is opened by branch. With carryOut — "Ask and carry out
+            now" of a question on lines: its message is one of "Reply and
+            carry out now"."""
             if "questions" in data:
                 qs = questions_of(data)
                 if not qs:
@@ -1502,6 +1507,8 @@ def make_handler(store, feed):
                 self.fail("empty question", 400)
                 return
             t = new_topic(None, "user", text, anchor_of(data.get("anchor")))
+            if data.get("carryOut"):
+                t["messages"][0]["carryOut"] = True
             s["topics"].append(t)
             store.save(s)
             self.send_json(t)
@@ -1991,7 +1998,10 @@ def closed_report(session):
     if s.get("stopped"):
         text = format_session(s, "the user stopped it with the “Stop discussion” button on the session page",
                               "Do not start wait again: list the outcome in the chat by step 3 of the stop skill "
-                              "(/live-comments:stop); its steps 1 and 2 are done.")
+                              "(/live-comments:stop); its steps 1 and 2 are done. Stopping closes only the "
+                              "discussion and does not change your work. Carry on the work in progress, such as the "
+                              "plan of “Apply resolved”, without asking, and give its results in the chat without "
+                              "setting the activity.")
     else:
         text = format_session(s, "the session was closed by leave")
     path.unlink()

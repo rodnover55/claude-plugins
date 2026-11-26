@@ -72,8 +72,12 @@
     var mode = load(MODE_KEY, "split") === "inline" ? "inline" : "split";
     // Layouts of the file diffs shown: path → layout.
     var lays = {};
-    // Collapsed files: file key (keyOf) → true or false, while the page is open.
+    // Collapsed files: file key (keyOf) → true or false. They are remembered
+    // in the browser for the repository while its HEAD commit stays the same
+    // (foldKey — the storage key of {head, folded}, known once the changes
+    // are read; foldHead — the commit); another commit forgets them.
     var folded = {};
+    var foldKey = null, foldHead = null;
     // A draft of a question on lines brings back the question field; the question's file is expanded.
     var saved = lc.draft("diffnew");
     if (saved) {
@@ -95,10 +99,11 @@
     // The rows of the tree from the last render (see treeRows) and the key of the chosen row.
     var listRows = [];
     var activeKey = null;
-    // Collapsed folders of the tree: folder key → true. They are remembered
-    // in the browser for the repository (dirsKey — the storage key, known
-    // once the changes are read), so all sessions on it share them. While
-    // searching, all folders are expanded, and folders collapsed then
+    // Collapsed folders and groups of the tree: folder key → true, the key
+    // of a group is keyOf("") of its side. They are remembered in the
+    // browser for the repository (dirsKey — the storage key, known once the
+    // changes are read), so all sessions on it share them. While searching,
+    // all folders and groups are expanded, and those collapsed then
     // (closedFound) stay collapsed until the search text changes.
     var closedDirs = {}, closedFound = {};
     var dirsKey = null;
@@ -122,6 +127,25 @@
       } catch (e) {
         // Without storage the choice lives only until a reload.
       }
+    }
+
+    function setFold(key, v) {
+      folded[key] = v;
+      if (foldKey) save(foldKey, { head: foldHead, folded: folded });
+    }
+
+    // Takes the remembered collapsed files of the repository with HEAD
+    // commit head; those of another commit are forgotten. The files collapsed
+    // or expanded before the changes were read stay so.
+    function takeFolds(head) {
+      if (!foldKey) {
+        foldKey = "lc-folded:" + repo.repo;
+        var kept = load(foldKey, {});
+        if (kept.head === head) folded = Object.assign(kept.folded || {}, folded);
+      } else if (head === foldHead) return;
+      else folded = {};
+      foldHead = head;
+      save(foldKey, { head: foldHead, folded: folded });
     }
 
     function getJson(url) {
@@ -184,6 +208,7 @@
           dirsKey = "lc-closed-dirs:" + repo.repo;
           closedDirs = load(dirsKey, {});
         }
+        takeFolds(repo.head);
         return getJson(lc.API + "/git/diffs?staged=" + (side ? 1 : 0));
       }).then(function (d) {
         // The group could have been switched during the request: such a response is stale.
@@ -365,6 +390,8 @@
       return box;
     }
 
+    // The new question field under lines. The arrow of the "Ask" menu: "Ask
+    // and carry out now".
     function draftEl() {
       var box = make("div", "lc-dcard lc-ddraft");
       var ta = make("textarea", "lc-textarea");
@@ -373,7 +400,18 @@
       ta.setAttribute("data-key", "diffnew");
       box.appendChild(ta);
       var row = make("div", "lc-actions");
-      row.appendChild(lc.button("Ask", "diff-ask", "primary"));
+      var split = make("div", "lc-split lc-split-reply");
+      split.appendChild(lc.button("Ask", "diff-ask", "primary"));
+      var more = split.appendChild(lc.button("▾", "ask-menu", "primary lc-split-more"));
+      more.title = "Ask and carry out now";
+      if (lc.menu() === "diffnew") {
+        var menu = make("div", "lc-menu");
+        var item = menu.appendChild(lc.button("Ask and carry out now", "diff-ask-now", "lc-menu-item"));
+        item.appendChild(make("span", "lc-menu-hint",
+          "Claude carries out right away what the question asks about the lines and answers with the result in its discussion"));
+        split.appendChild(menu);
+      }
+      row.appendChild(split);
       row.appendChild(lc.button("Cancel", "diff-cancel"));
       row.appendChild(make("span", "lc-kbd", "Ctrl+Enter — send"));
       box.appendChild(row);
@@ -419,7 +457,8 @@
     // its nesting level, side, name, open — whether the folder is expanded,
     // f — the file of a file row. searching — the list is a search result:
     // all folders are expanded except those collapsed during this search.
-    function treeRows(list, side, searching) {
+    // all — the rows inside collapsed folders too.
+    function treeRows(list, side, searching, all) {
       var closed = searching ? closedFound : closedDirs;
       var root = { dirs: {}, files: [] };
       list.forEach(function (f) {
@@ -440,7 +479,7 @@
           var key = keyOf(dir.path + "/", side);
           var open = !closed[key];
           rows.push({ kind: "dir", key: key, up: up, depth: depth, side: side, name: name, open: open });
-          if (open) walk(dir, key, depth + 1);
+          if (open || all) walk(dir, key, depth + 1);
         });
         node.files.slice().sort(function (a, b) { return byName(a.path, b.path); }).forEach(function (f) {
           rows.push({ kind: "file", key: keyOf(f.path, side), up: up, depth: depth, side: side,
@@ -512,36 +551,76 @@
       return listInput.value.toLowerCase().split(/\s+/).filter(Boolean);
     }
 
+    // The files of group g whose paths contain all words of the search.
+    function foundIn(g, words) {
+      return g.files.filter(function (f) {
+        var p = f.path.toLowerCase();
+        return words.every(function (w) { return p.indexOf(w) >= 0; });
+      });
+    }
+
+    // The collapsed folders and groups the tree shows now: of the search or remembered.
+    function closedNow() {
+      return listWords().length ? closedFound : closedDirs;
+    }
+
+    // The chosen row if it is a folder, otherwise null.
+    function chosenDir() {
+      var r = listRows.find(function (x) { return x.key === activeKey; });
+      return r && r.kind === "dir" ? r : null;
+    }
+
+    // The header of the file list: the branch, the buttons that collapse and
+    // expand the tree, and closing. "Collapse nested" and "Expand nested"
+    // are available while a folder is chosen.
+    function listHeadEl() {
+      var head = make("div");
+      head.appendChild(make("span", "lc-scm-branch", repo ? "⎇ " + repo.branch : ""));
+      var acts = make("span", "lc-ftree-acts"), dir = chosenDir();
+      [["Collapse all", "tree-close-all", "All folders and both groups collapse"],
+        ["Expand all", "tree-open-all", "All folders and both groups expand"],
+        ["Collapse nested", "tree-close-nested", "The folders inside the chosen folder collapse"],
+        ["Expand nested", "tree-open-nested", "The folders inside the chosen folder expand"]].forEach(function (a) {
+        var b = acts.appendChild(lc.button(a[0], a[1], "lc-small"));
+        b.title = a[2];
+        if (/-nested$/.test(a[1])) b.disabled = !dir;
+      });
+      head.appendChild(acts);
+      head.appendChild(iconBtn("×", "files", "Close the file list — Esc"));
+      return head;
+    }
+
     // Re-renders the file list popup: the files of both groups whose paths
     // contain all words of the search, as trees. The chosen row stays chosen
     // while it is in the list, otherwise the first file is chosen. reveal —
     // scroll the list to the chosen row; otherwise the scroll position stays.
     // Only the rows that differ change (see patchKids in app.js).
     function renderList(reveal) {
-      var head = make("div"), tree = make("div");
-      head.appendChild(make("span", "lc-scm-branch", repo ? "⎇ " + repo.branch : ""));
-      head.appendChild(iconBtn("×", "files", "Close the file list — Esc"));
-      lc.patchKids(listHead, head);
+      var tree = make("div");
       if (!repo) {
+        listRows = [];
+        lc.patchKids(listHead, listHeadEl());
         tree.appendChild(make("p", "lc-hint", "Loading changes…"));
         lc.patchKids(listTree, tree);
         return;
       }
-      var words = listWords();
+      var words = listWords(), closed = closedNow();
       var parts = groups().map(function (g) {
-        var found = g.files.filter(function (f) {
-          var p = f.path.toLowerCase();
-          return words.every(function (w) { return p.indexOf(w) >= 0; });
-        });
-        return { g: g, found: found, rows: treeRows(found, g.staged, words.length > 0) };
+        var found = foundIn(g, words), shut = !!closed[keyOf("", g.staged)];
+        return { g: g, found: found, shut: shut, rows: shut ? [] : treeRows(found, g.staged, words.length > 0) };
       });
       listRows = [].concat.apply([], parts.map(function (p) { return p.rows; }));
       if (!listRows.some(function (r) { return r.key === activeKey; })) {
         var first = listRows.find(function (r) { return r.kind === "file"; });
         activeKey = first ? first.key : null;
       }
+      lc.patchKids(listHead, listHeadEl());
       parts.forEach(function (p) {
+        // A click on the group header collapses or expands the group.
         var gh = make("div", "lc-group");
+        gh.setAttribute("data-act", "tree-group");
+        gh.setAttribute("data-key", keyOf("", p.g.staged));
+        gh.appendChild(make("span", "lc-tog", p.shut ? "▸" : "▾"));
         gh.appendChild(make("span", "lc-group-title", p.g.title));
         if (p.g.files.length) gh.appendChild(p.g.staged ? iconBtn("−", "unstage-all", "Unstage all changes") :
           iconBtn("+", "stage-all", "Stage all changes"));
@@ -549,7 +628,7 @@
           String(p.g.files.length)));
         tree.appendChild(gh);
         p.rows.forEach(function (r) { tree.appendChild(r.kind === "dir" ? dirEl(r, words) : listFileEl(r, words)); });
-        if (!p.found.length) tree.appendChild(make("div", "lc-file lc-none", p.g.files.length ? "No matches" : "No changes"));
+        if (!p.found.length && !p.shut) tree.appendChild(make("div", "lc-file lc-none", p.g.files.length ? "No matches" : "No changes"));
       });
       lc.patchKids(listTree, tree);
       var a = reveal && listTree.querySelector(".lc-active");
@@ -616,14 +695,35 @@
       listInput.focus();
     }
 
-    // Folds or unfolds the folder with key, choosing it; outside a search
-    // the folder's state is remembered.
+    // Folds or unfolds the folder or group with key, choosing a folder;
+    // outside a search the state is remembered.
     function toggleDir(key) {
-      var closed = listWords().length ? closedFound : closedDirs;
+      var closed = closedNow();
       if (closed[key]) delete closed[key];
       else closed[key] = true;
       if (closed === closedDirs && dirsKey) save(dirsKey, closedDirs);
-      activeKey = key;
+      var dir = !/^[ws]:$/.test(key);
+      if (dir) activeKey = key;
+      renderList(dir);
+    }
+
+    // "Collapse all" and "Expand all" — all folders and both groups;
+    // "Collapse nested" and "Expand nested" — the folders inside the chosen
+    // folder at any depth, the folder itself stays as it is. Outside a
+    // search the state is remembered.
+    function foldTree(close, nested) {
+      var dir = chosenDir();
+      if (nested && !dir) return;
+      var closed = closedNow(), words = listWords();
+      var inside = function (k) { return !nested || k !== dir.key && k.indexOf(dir.key) === 0; };
+      if (close) groups().forEach(function (g) {
+        if (!nested) closed[keyOf("", g.staged)] = true;
+        treeRows(foundIn(g, words), g.staged, words.length > 0, true).forEach(function (r) {
+          if (r.kind === "dir" && inside(r.key)) closed[r.key] = true;
+        });
+      });
+      else Object.keys(closed).forEach(function (k) { if (inside(k)) delete closed[k]; });
+      if (closed === closedDirs && dirsKey) save(dirsKey, closedDirs);
       renderList(true);
     }
 
@@ -631,6 +731,8 @@
     // re-rendered, so moving is fast on a page with many lines of diffs.
     function choose(key) {
       activeKey = key;
+      var dir = chosenDir();
+      Array.prototype.forEach.call(listHead.querySelectorAll('[data-act$="-nested"]'), function (b) { b.disabled = !dir; });
       var old = listTree.querySelector(".lc-active");
       if (old) old.classList.remove("lc-active");
       var row = listTree.querySelector('[data-key="' + CSS.escape(key) + '"]');
@@ -709,6 +811,35 @@
       return td;
     }
 
+    // The file line of table row line of diff d by which the page keeps its
+    // scroll position: "n" and the number in the new version, for a row of
+    // removed lines only — "o" and the number in the old one, for a hunk
+    // header — "@" and its text.
+    function lineNo(d, line) {
+      var rows = line.rows.map(function (k) { return d.rows[k]; });
+      var kept = rows.find(function (r) { return r.t !== "-"; });
+      if (rows[0].t === "@") return "@" + rows[0].s;
+      return kept ? "n" + kept.n : "o" + rows[0].o;
+    }
+
+    // The diff line at the top of the window: the first table row whose
+    // bottom is below y — {sel: its selector by the file and lineNo, top:
+    // the top of the row}; null if there are no such rows. The rows go down
+    // the page in their order, so the row is found by halving.
+    function lineAt(y) {
+      var rows = lc.app.querySelectorAll(".lc-dtable tr[data-ln]");
+      var lo = 0, hi = rows.length;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (rows[mid].getBoundingClientRect().bottom > y) hi = mid;
+        else lo = mid + 1;
+      }
+      if (lo === rows.length) return null;
+      var tr = rows[lo];
+      return { sel: '.lc-dtable[data-path="' + CSS.escape(tr.closest(".lc-dtable").getAttribute("data-path")) +
+        '"] tr[data-ln="' + CSS.escape(tr.getAttribute("data-ln")) + '"]', top: tr.getBoundingClientRect().top };
+    }
+
     // Table row n of diff d. Its cells are built when the row enters the
     // page (see patchKids in app.js): the row of the same diff, group, view
     // and number that is already there stays instead.
@@ -717,6 +848,7 @@
       var tr = make("tr", "lc-dr");
       tr.setAttribute("data-line", n);
       tr.setAttribute("data-rows", line.rows.join(","));
+      tr.setAttribute("data-ln", lineNo(d, line));
       tr.lcSig = [d.hash, staged, mode, n].join("\n");
       tr.lcFill = function () {
         if (r.t === "@") {
@@ -886,8 +1018,8 @@
     }
 
     // After rendering: the open file list with the new data, focus in the new
-    // question field, scrolling to the file or topic from the link, the
-    // position of the bar above selected lines.
+    // question field, scrolling to the file or topic from the link or from
+    // Alt+N, the position of the bar above selected lines.
     function after() {
       if (listOpen) renderList(false);
       if (focusDraft) {
@@ -906,15 +1038,24 @@
         var card = lc.app.querySelector('.lc-dcard[data-tid="' + focusTopic + '"]');
         var t = lc.topics().find(function (x) { return x.id === focusTopic; });
         var key = t && t.anchor && t.anchor.file && keyOf(t.anchor.file);
+        var msgs = card && focusLast ? card.querySelectorAll("[data-mid]") : [];
+        if (msgs.length) {
+          // Claude's last message stands under the toolbar and the file header that stay on top.
+          var head = card.closest(".lc-dfile").querySelector(".lc-dfile-head");
+          var tb = lc.app.querySelector(".lc-dtoolbar");
+          window.scrollBy(0, msgs[msgs.length - 1].getBoundingClientRect().top -
+            (tb ? tb.offsetHeight : 0) - (head ? head.offsetHeight : 0) - 8);
+        } else if (card) card.scrollIntoView({ block: "center" });
         if (card) {
-          card.scrollIntoView({ block: "center" });
           focusTopic = null;
+          focusLast = false;
         } else if (key && fileOf(t.anchor.file) && folded[key] !== false) {
           // The topic is in a collapsed file: the file expands, scrolling happens after rendering.
-          folded[key] = false;
+          setFold(key, false);
           setTimeout(lc.render);
         } else {
           focusTopic = null;
+          focusLast = false;
         }
       }
       if (bar && !bar.hidden) showBar();
@@ -933,7 +1074,7 @@
     // Switches the page to group side and, if path is given, to its file.
     function showSide(side, path) {
       if (path) {
-        folded[keyOf(path, side)] = false;
+        setFold(keyOf(path, side), false);
         focusFile = path;
       }
       if (side === staged) {
@@ -949,6 +1090,122 @@
       refresh();
     }
 
+    // Sends the question on lines; with carry — as "Ask and carry out now":
+    // Claude carries it out right away and answers in its discussion.
+    function ask(carry) {
+      var ta = lc.app.querySelector('textarea[data-key="diffnew"]');
+      var text = ta ? ta.value.trim() : "";
+      if (!text || !draft) return;
+      var why = lc.uploading(text);
+      if (why) {
+        lc.toast(why);
+        return;
+      }
+      var anchor = draft;
+      draft = null;
+      ta.value = "";
+      lc.setDraft("diffnew", "");
+      lc.post("/topics", carry ? { text: text, anchor: anchor, carryOut: true } : { text: text, anchor: anchor }).then(function () {
+        lc.toast(carry ? "Claude will carry it out right away and answer in the topic" : "Question sent to Claude");
+      }, function (err) {
+        // An unsent question returns to the field from the draft.
+        draft = anchor;
+        lc.setDraft("diffnew", text);
+        lc.render();
+        lc.failed(err);
+      });
+      lc.render();
+    }
+
+    // ---- next unanswered question
+
+    // The question on lines last gone to by Alt+N.
+    var lastNext = null;
+    // Whether the page shows Claude's last message of focusTopic at the top.
+    var focusLast = false;
+
+    // The questions on lines of diffs list in the order of the page: in each
+    // file first those whose lines are not in its diff, then by lines.
+    function pageTopics(list) {
+      var out = [];
+      list.forEach(function (d) {
+        fileTopics(d.path).map(function (t, k) { return { t: t, at: placeOf(d, t.anchor), k: k }; })
+          .sort(function (x, y) { return x.at - y.at || x.k - y.k; })
+          .forEach(function (x) { out.push(x.t); });
+      });
+      return out;
+    }
+
+    function cardOf(tid) {
+      return lc.app.querySelector('.lc-dcard[data-tid="' + CSS.escape(tid) + '"]');
+    }
+
+    // The bottom of the toolbar that stays on top of the window.
+    function barBottom() {
+      var tb = lc.app.querySelector(".lc-dtoolbar");
+      return tb ? tb.getBoundingClientRect().bottom : 0;
+    }
+
+    // Where Alt+N goes on from in order (see pageTopics): {i, cur}. cur — the
+    // question whose field has the focus, or the question last gone to while
+    // its discussion is in the window, and i — its place; without them i is
+    // the place of the last question above the top of the window: of its
+    // discussion, or of the header of its collapsed file.
+    function startOf(order) {
+      var a = document.activeElement, box = a && a.closest ? a.closest(".lc-dcard[data-tid]") : null;
+      var cur = box ? box.getAttribute("data-tid") : null;
+      var last = !cur && lastNext ? cardOf(lastNext) : null;
+      if (last) {
+        var r = last.getBoundingClientRect();
+        if (r.bottom > barBottom() && r.top < window.innerHeight) cur = lastNext;
+      }
+      var i = cur ? order.findIndex(function (t) { return t.id === cur; }) : -1;
+      if (i >= 0) return { i: i, cur: cur };
+      var top = barBottom();
+      for (i = 0; i < order.length; i++) {
+        var el = cardOf(order[i].id) ||
+          lc.app.querySelector('.lc-dfile[data-path="' + CSS.escape(order[i].anchor.file) + '"]');
+        if (el && el.getBoundingClientRect().top >= top) break;
+      }
+      return { i: i - 1, cur: null };
+    }
+
+    // Alt+N, as "Next unanswered" in the tree: the next open question on
+    // lines where it is the user's turn. After the questions of this group
+    // below the current one go those of the other group, then again those of
+    // this group from the first.
+    function next() {
+      if (!files) return;
+      if (listOpen) setList(false);
+      var order = pageTopics(files), at = startOf(order), side = staged;
+      var ahead = order.slice(at.i + 1).filter(lc.awaitsUser);
+      if (ahead.length) {
+        goTopic(ahead[0], side);
+        return;
+      }
+      getJson(lc.API + "/git/diffs?staged=" + (side ? 0 : 1)).then(function (d) {
+        if (side !== staged) return;
+        var here = {};
+        order.forEach(function (t) { here[t.id] = true; });
+        var there = pageTopics(d.files).filter(function (t) { return !here[t.id] && lc.awaitsUser(t); });
+        var back = order.slice(0, at.i + 1).filter(function (t) { return t.id !== at.cur && lc.awaitsUser(t); });
+        if (there.length) goTopic(there[0], !side);
+        else if (back.length) goTopic(back[0], side);
+        else lc.toast("No other unanswered questions on lines");
+      }, lc.failed);
+    }
+
+    // Shows question t in group side: its file and discussion expand, and
+    // the page shows Claude's last message of the question at the top.
+    function goTopic(t, side) {
+      lastNext = t.id;
+      cardOpen[t.id] = true;
+      setFold(keyOf(t.anchor.file, side), false);
+      focusTopic = t.id;
+      focusLast = true;
+      showSide(side);
+    }
+
     function act(name, node, e) {
       var holder = node.closest("[data-path]");
       var path = holder ? holder.getAttribute("data-path") : null;
@@ -962,7 +1219,14 @@
           gotoFile(node.getAttribute("data-staged") === "1", path);
           break;
         case "tree-dir":
+        case "tree-group":
           toggleDir(node.getAttribute("data-key"));
+          break;
+        case "tree-close-all":
+        case "tree-open-all":
+        case "tree-close-nested":
+        case "tree-open-nested":
+          foldTree(/-close-/.test(name), /-nested$/.test(name));
           break;
         case "diff-side":
           showSide(node.getAttribute("data-side") === "1");
@@ -979,17 +1243,17 @@
           lc.render();
           break;
         case "fold-file":
-          folded[keyOf(path)] = !isFolded(d);
+          setFold(keyOf(path), !isFolded(d));
           clearSelection();
           lc.render();
           break;
         case "review-file":
           if (isReviewed(d)) {
             delete reviewed[keyOf(path)];
-            folded[keyOf(path)] = false;
+            setFold(keyOf(path), false);
           } else {
             reviewed[keyOf(path)] = d.hash;
-            folded[keyOf(path)] = true;
+            setFold(keyOf(path), true);
           }
           save(REVIEW_KEY, reviewed);
           lc.render();
@@ -1050,28 +1314,11 @@
           lc.render();
           break;
         case "diff-ask":
-          var ta = lc.app.querySelector('textarea[data-key="diffnew"]');
-          var text = ta ? ta.value.trim() : "";
-          if (!text || !draft) return;
-          var why = lc.uploading(text);
-          if (why) {
-            lc.toast(why);
-            return;
-          }
-          var anchor = draft;
-          draft = null;
-          ta.value = "";
-          lc.setDraft("diffnew", "");
-          lc.post("/topics", { text: text, anchor: anchor }).then(function () {
-            lc.toast("Question sent to Claude");
-          }, function (err) {
-            // An unsent question returns to the field from the draft.
-            draft = anchor;
-            lc.setDraft("diffnew", text);
-            lc.render();
-            lc.failed(err);
-          });
-          lc.render();
+          ask(false);
+          break;
+        case "diff-ask-now":
+          lc.closeMenus();
+          ask(true);
           break;
         case "card-toggle":
           var tid = node.closest("[data-tid]").getAttribute("data-tid");
@@ -1106,7 +1353,7 @@
     syncUrl();
     refresh();
 
-    return { el: el, act: act, after: after, anchor: function () { return draft; } };
+    return { el: el, act: act, after: after, next: next, lineAt: lineAt, anchor: function () { return draft; } };
   };
   // The diff blocks of messages are laid out by app.js the same way.
   window.LiveCommentsDiff.layout = layout;

@@ -56,7 +56,8 @@
   var focusKey = takeFocusKey();
   // Whether the menu of the "Apply resolved" button is open.
   var applyMenu = false;
-  // The topic whose "Reply" menu is open, or null.
+  // The topic whose "Reply" menu is open, "diffnew" — the "Ask" menu of a
+  // question on lines of the changes page, or null.
   var replyMenu = null;
   // Whether the "Questions" window of the topic page is open.
   var treeMenu = false;
@@ -473,7 +474,7 @@
   // The element of Markdown text. Its content is built when the element
   // enters the page (see patchKids): an element of the same text that is
   // already there stays instead. apply — the code blocks written for a file
-  // get the "Apply" button.
+  // and the diff blocks get the "Apply" button.
   function md(text, cls, apply) {
     var e = make("div", "lc-md" + (cls ? " " + cls : ""));
     e.lcSig = (cls || "") + "\n" + (apply ? 1 : 0) + "\n" + text;
@@ -486,9 +487,10 @@
       e.querySelectorAll("pre").forEach(codeBox);
       e.querySelectorAll("pre>code.language-diff").forEach(diffBox);
       if (apply) e.querySelectorAll(".lc-code-head").forEach(function (head) {
-        if (!head.parentNode.querySelector("pre[data-file]")) return;
         var b = head.insertBefore(button("Apply", "code-apply", "lc-small primary"), head.querySelector("[data-act=code-copy]"));
-        b.title = "Claude puts the code into the file right away and answers in the topic";
+        b.title = head.parentNode.querySelector("code.language-diff") ?
+          "Claude makes the change in the file right away and answers in the topic" :
+          "Claude puts the code into the file right away and answers in the topic";
       });
     };
     return e;
@@ -1170,24 +1172,32 @@
     return (a.start === a.end ? "line " + a.start : "lines " + a.start + "–" + a.end) + " of " + where;
   }
 
+  // The lines of a question on the changes page: the file, the lines with
+  // the link to them in the diff, and the diff fragment. They stand in the
+  // first message of the topic; null for a topic without such lines.
+  function linesEl(t) {
+    var a = t.anchor;
+    if (!a || a.kind !== "diff") return null;
+    var box = make("div", "lc-ctx");
+    var src = make("div", "lc-src", a.file + " · " + linesText(a) + " · ");
+    var go = make("a", "", "in the diff ↗");
+    go.href = "/" + SID + "/diff?f=" + encodeURIComponent(a.file) + "&s=" + (a.staged ? 1 : 0) + "&topic=" + t.id;
+    go.target = "_blank";
+    src.appendChild(go);
+    box.appendChild(src);
+    var pre = make("pre", "lc-dquote");
+    (a.rows || []).forEach(function (r) {
+      pre.appendChild(make("div", "lc-dq lc-dq-" + ({ "+": "add", "-": "del" }[r.charAt(0)] || "ctx"), r));
+    });
+    box.appendChild(pre);
+    return box;
+  }
+
+  // The quote of a topic asked about a fragment of an HTML page; null for other topics.
   function contextEl(t) {
     var a = t.anchor;
-    if (!a) return null;
+    if (!a || a.kind === "diff") return null;
     var box = make("div", "lc-ctx");
-    if (a.kind === "diff") {
-      var src = make("div", "lc-src", a.file + " · " + linesText(a) + " · ");
-      var go = make("a", "", "in the diff ↗");
-      go.href = "/" + SID + "/diff?f=" + encodeURIComponent(a.file) + "&s=" + (a.staged ? 1 : 0) + "&topic=" + t.id;
-      go.target = "_blank";
-      src.appendChild(go);
-      box.appendChild(src);
-      var pre = make("pre", "lc-dquote");
-      (a.rows || []).forEach(function (r) {
-        pre.appendChild(make("div", "lc-dq lc-dq-" + ({ "+": "add", "-": "del" }[r.charAt(0)] || "ctx"), r));
-      });
-      box.appendChild(pre);
-      return box;
-    }
     var page = a.pageTitle || decodeURIComponent(String(a.page || "").split("/").pop());
     box.appendChild(make("div", "lc-src", page + (a.path ? " › " + a.path : "")));
     box.appendChild(make("blockquote", "lc-quote", clip(a.quote || "", 420)));
@@ -1214,7 +1224,9 @@
     return ul.firstChild ? ul : null;
   }
 
-  function messageEl(t, m) {
+  // Message m of topic t; the first message of a question on lines has its
+  // lines (see linesEl), except under these lines (inline).
+  function messageEl(t, m, inline) {
     var claude = m.author === "claude";
     var kind = m.kind || "";
     var el = make("div", "lc-msg " + (claude ? "lc-claude" : "lc-user") + (kind ? " lc-" + kind : "") +
@@ -1231,6 +1243,8 @@
     if (claude && !kind && t.state !== "closed" && (unseen(m) || fresh[m.id]))
       who.appendChild(make("span", "lc-new", "new"));
     el.appendChild(who);
+    var lines = !inline && m === t.messages[0] ? linesEl(t) : null;
+    if (lines) el.appendChild(lines);
     if (kind === "branch" && m.topics) {
       var ol = make("ol", "lc-tree lc-root lc-branch");
       ordered(m.topics.map(function (id) { return byId[id]; }).filter(Boolean)).forEach(function (k) {
@@ -1247,7 +1261,7 @@
       var sub = m.revoked ? null : subDecisions(t);
       if (sub) el.appendChild(sub);
     } else {
-      // "Apply" at the code blocks Claude wrote for a file.
+      // "Apply" at the code blocks Claude wrote for a file and at its diff blocks.
       el.appendChild(md(m.text, "", claude && !kind && t.state === "open"));
     }
     return el;
@@ -1255,7 +1269,7 @@
 
   // The reply field and buttons of an open topic; inline — under diff lines,
   // without the "Next unanswered" button. The arrow of the "Reply" menu:
-  // "Reply and carry out now".
+  // "Reply and carry out now" and "Reply in a subquestion".
   function replyEl(t, inline) {
     var box = make("div", "lc-replybox");
     var ta = make("textarea", "lc-textarea");
@@ -1268,12 +1282,14 @@
     var split = make("div", "lc-split lc-split-reply");
     split.appendChild(button("Reply", "reply", "primary"));
     var more = split.appendChild(button("▾", "reply-menu", "primary lc-split-more"));
-    more.title = "Reply and carry out now";
+    more.title = "Reply and carry out now or in a subquestion";
     if (replyMenu === t.id) {
       var menu = make("div", "lc-menu");
       var item = menu.appendChild(button("Reply and carry out now", "reply-now", "lc-menu-item"));
       item.appendChild(make("span", "lc-menu-hint",
         "Claude carries out right away what the message asks, or with an empty field what the discussion came to, and answers with the result in the topic"));
+      var sub = menu.appendChild(button("Reply in a subquestion", "reply-sub", "lc-menu-item"));
+      sub.appendChild(make("span", "lc-menu-hint", "The message opens a subquestion of the topic, and Claude answers in it"));
       split.appendChild(menu);
     }
     row.appendChild(split);
@@ -1393,18 +1409,19 @@
     });
   }
 
-  // The topic's discussion on its page: quote, messages, reply. Subquestions
-  // are shown as a tree in the "Subquestions" messages that opened them. The
-  // state of an open topic ("Claude is replying…", "awaiting reply") stands
-  // right above the reply field; what Claude is doing for the topic
-  // (cm.py activity --topic) replaces it, except while the user's message
-  // waits in the queue. inline — the discussion under diff lines: without
-  // the quote and without the "Next unanswered" button.
+  // The topic's discussion on its page: quote, messages, reply; the lines of
+  // a question on lines stand in its first message. Subquestions are shown
+  // as a tree in the "Subquestions" messages that opened them. The state of
+  // an open topic ("Claude is replying…", "awaiting reply") stands right
+  // above the reply field; what Claude is doing for the topic (cm.py
+  // activity --topic) replaces it, except while the user's message waits in
+  // the queue. inline — the discussion under diff lines: without the quote,
+  // the lines and the "Next unanswered" button.
   function bodyEl(t, inline) {
     var b = make("div", "lc-body");
     var ctx = inline ? null : contextEl(t);
     if (ctx) b.appendChild(ctx);
-    t.messages.forEach(function (m) { b.appendChild(messageEl(t, m)); });
+    t.messages.forEach(function (m) { b.appendChild(messageEl(t, m, inline)); });
     if (t.state === "open") {
       var s = status(t);
       var act = st.activity && st.activity.topic === t.id && s[0] !== "queued" ? st.activity : null;
@@ -1457,14 +1474,17 @@
   }
 
   // The title of open topic t at the end of the path in the header. Under
-  // the pointer it shows the first message of the topic in full; Esc hides
-  // the message until the pointer leaves the title.
+  // the pointer it shows the first message of the topic in full, with the
+  // lines of a question on lines; Esc hides the message until the pointer
+  // leaves the title.
   var popOff = false;
   function crumbTopicEl(t) {
     var box = make("span", "lc-crumb-topic" + (popOff ? " lc-pop-off" : ""));
     box.appendChild(make("span", "lc-crumb-title", titleOf(t)));
     if (t.messages.length) {
       var pop = make("div", "lc-topic-pop");
+      var lines = linesEl(t);
+      if (lines) pop.appendChild(lines);
       pop.appendChild(md(t.messages[0].text));
       box.appendChild(pop);
     }
@@ -2002,17 +2022,21 @@
       if (document.activeElement === ta) snap.focus = { key: ta.getAttribute("data-key"), s: ta.selectionStart, e: ta.selectionEnd };
     });
     var a = document.activeElement;
-    var el = a && app.contains(a) && a.getAttribute("data-key") ? a : null;
+    var el = a && app.contains(a) && a.getAttribute("data-key") ? a : null, focused = !!el;
     if (!el) {
+      // A header that stays on top of the window does not move with the page: it is not an anchor.
       var keyed = app.querySelectorAll("[data-key]");
       for (var i = 0; i < keyed.length; i++) {
-        if (keyed[i].getBoundingClientRect().bottom > 2) {
+        if (keyed[i].getBoundingClientRect().bottom > 2 && getComputedStyle(keyed[i]).position !== "sticky") {
           el = keyed[i];
           break;
         }
       }
     }
     if (el) snap.anchor = { key: el.getAttribute("data-key"), top: el.getBoundingClientRect().top };
+    // On the changes page the anchor is the diff line at the top of the window, if it is higher.
+    var line = diff && !focused ? diff.lineAt(2) : null;
+    if (line && (!snap.anchor || line.top < snap.anchor.top)) snap.anchor = line;
     return snap;
   }
 
@@ -2050,7 +2074,7 @@
       }
     }
     if (snap.anchor) {
-      var el = app.querySelector('[data-key="' + snap.anchor.key + '"]');
+      var el = app.querySelector(snap.anchor.sel || '[data-key="' + snap.anchor.key + '"]');
       if (el) window.scrollBy(0, el.getBoundingClientRect().top - snap.anchor.top);
     }
     var menu = app.querySelector(".lc-tree-all");
@@ -2260,7 +2284,8 @@
 
   // Sends the text of field ta to path; okMsg — the toast after sending. With
   // empty — also an empty field, and okMsg is then a function of the text.
-  // extra — more fields of the request.
+  // extra — more fields of the request, or a function of the text that
+  // returns the request.
   function send(ta, path, okMsg, empty, extra) {
     var text = ta ? ta.value.trim() : "";
     if (!text && !empty) return;
@@ -2275,7 +2300,7 @@
       fit(ta);
       setDraft(key, "");
     }
-    post(path, Object.assign({ text: text }, extra)).then(function () { toast(empty ? okMsg(text) : okMsg); }, function (e) {
+    post(path, typeof extra === "function" ? extra(text) : Object.assign({ text: text }, extra)).then(function () { toast(empty ? okMsg(text) : okMsg); }, function (e) {
       // Unsent text returns to the field from the draft.
       if (text) setDraft(key, text);
       render();
@@ -2322,6 +2347,12 @@
         treeMenu = false;
         render();
         break;
+      case "ask-menu":
+        replyMenu = replyMenu === "diffnew" ? null : "diffnew";
+        applyMenu = false;
+        treeMenu = false;
+        render();
+        break;
       case "tree-menu":
         treeMenu = !treeMenu;
         replyMenu = null;
@@ -2339,6 +2370,11 @@
         send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/messages", function () {
           return "Claude will carry it out right away and answer in the topic";
         }, true, { carryOut: true });
+        break;
+      case "reply-sub":
+        closeMenus();
+        send(app.querySelector('textarea[data-key="reply:' + tid + '"]'), "/topics/" + tid + "/branch", "Subquestion sent to Claude",
+          false, function (text) { return { questions: [{ text: text }], author: "user" }; });
         break;
       case "diff-mode":
         if (diff) diff.act(name, node, e);
@@ -2359,10 +2395,12 @@
       case "code-apply":
         var pre = node.closest(".lc-code").querySelector("pre"), code = pre.textContent;
         var lang = (/(?:^| )language-(\S+)/.exec(pre.firstChild.className) || ["", ""])[1];
+        var file = pre.getAttribute("data-file");
         var fence = "```";
         while (code.indexOf(fence) >= 0) fence += "`";
         post("/topics/" + tid + "/messages", {
-          text: "Apply this code to `" + pre.getAttribute("data-file") + "`:\n\n" + fence + lang + "\n" + code + "\n" + fence,
+          text: "Apply this " + (lang === "diff" ? "diff" : "code") + (file ? " to `" + file + "`" : "") + ":\n\n" +
+            fence + lang + "\n" + code + "\n" + fence,
           carryOut: true
         }).then(function () { toast("Claude will apply it right away and answer in the topic"); }, failed);
         break;
@@ -2425,7 +2463,7 @@
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (!t.closest) return;
-    if (!t.closest(".lc-menu, [data-act=apply-menu], [data-act=reply-menu], [data-act=tree-menu]")) closeMenus();
+    if (!t.closest(".lc-menu, [data-act=apply-menu], [data-act=reply-menu], [data-act=ask-menu], [data-act=tree-menu]")) closeMenus();
     // Before links: the button of an image inside a link does not open the link.
     var full = t.closest("[data-act=full]");
     if (full && app.contains(full)) {
@@ -2774,13 +2812,19 @@
 
   // Navigation by keys, including from the reply field; by the physical key,
   // so it works in any keyboard layout. Alt+N — "Next unanswered" on the
-  // topic and session pages, Alt+U — "Back", Alt+H — to the session page,
-  // Alt+X — to the next draft.
+  // topic and session pages, on the changes page — the next unanswered
+  // question on lines, Alt+U — "Back", Alt+H — to the session page, Alt+X —
+  // to the next draft.
   document.addEventListener("keydown", function (e) {
     if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.repeat || !st || gone) return;
+    if (diff && e.code === "KeyN") {
+      e.preventDefault();
+      diff.next();
+      return;
+    }
     var draft = e.code === "KeyX" ? draftsAfter()[0] : null;
     var href = draft ? draft.href :
-      e.code === "KeyN" ? (diff ? null : nextHref()) :
+      e.code === "KeyN" ? nextHref() :
       e.code === "KeyU" ? upHref() :
       e.code === "KeyH" ? homeHref() : null;
     if (!href) return;
@@ -2806,7 +2850,7 @@
   // Keys of this page: [key, what it does].
   function keyList() {
     var list = [];
-    if (!diff) list.push(["Alt+N", "next unanswered question"]);
+    list.push(["Alt+N", diff ? "next unanswered question on lines" : "next unanswered question"]);
     if (TOPIC) list.push(["Alt+U", "one level up, like “← Back”"]);
     if (diff) list.push(["Alt+U", "to the session page, like “← Discussion”"]);
     if (TOPIC || diff) list.push(["Alt+H", "to the session page"]);
@@ -2913,6 +2957,7 @@
       request: request, post: post, render: render, titleOf: titleOf, status: status, unseenOf: unseenOf,
       draft: function (key) { return drafts[key] || null; }, setDraft: setDraft, uploading: uploading,
       bodyEl: bodyEl, linesText: linesText, patchKids: patchKids, region: region, workOf: workOf, stampOf: stampOf,
+      awaitsUser: awaitsUser, closeMenus: closeMenus, menu: function () { return replyMenu; },
       topics: function () { return st ? st.topics : []; }
     });
   }

@@ -28,7 +28,7 @@ The number is the count of open topics of the discussion. Ctrl+click (Cmd+click 
 
 ## Requirements
 
-- `python3` on `PATH` of the status line command.
+- `python3` in the standard `PATH` of the system (`getconf PATH`).
 - A terminal with OSC 8 links for the click on ⧉: iTerm2, kitty, WezTerm, Ghostty and others. macOS Terminal.app does not support them: there the ⧉ icon is shown but is not clickable, so set the line up without `--copy`.
 - **Linux**: `xdg-mime` (xdg-utils); `wl-copy` (wl-clipboard) on Wayland, or `xclip` or `xsel` on X11; `notify-send` is optional.
 - **macOS**: nothing extra: `osacompile`, `plutil`, `codesign` and `lsregister` come with the system.
@@ -37,8 +37,8 @@ The number is the count of open topics of the discussion. Ctrl+click (Cmd+click 
 
 Files go to `~/.local/share/live-comments/` (`$XDG_DATA_HOME/live-comments/` when `XDG_DATA_HOME` is set), the data directory of the live-comments server. They are copied there because the skill directory changes with every plugin update.
 
-1. **Copy the line script:**
-   `mkdir -p ~/.local/share/live-comments && cp ${CLAUDE_SKILL_DIR}/live-comments-line.py ~/.local/share/live-comments/`
+1. **Copy the line script and the Python launcher:**
+   `mkdir -p ~/.local/share/live-comments && cp ${CLAUDE_SKILL_DIR}/live-comments-line.py ${CLAUDE_SKILL_DIR}/../start/py ~/.local/share/live-comments/`
 2. **Install the copy handler** for the current system (`uname`):
    - Linux: `sh ${CLAUDE_SKILL_DIR}/linux/install-copy-handler.sh`
    - macOS: `sh ${CLAUDE_SKILL_DIR}/macos/install-copy-handler.sh`
@@ -46,17 +46,17 @@ Files go to `~/.local/share/live-comments/` (`$XDG_DATA_HOME/live-comments/` whe
    If the script fails because a requirement is missing, tell the user what to install, and set the line up without `--copy` if they do not want to install it. On Linux the script prints the previous default handler of `lc-copy:` links, if there was one: tell the user about it.
 3. **Add the line to the status line.** Read `statusLine` in `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json` when `CLAUDE_CONFIG_DIR` is set). The line script needs the same JSON input as the status line command, and its output goes on a new line below the existing status line.
    - **No `statusLine`**: set
-     `"statusLine": {"type": "command", "command": "python3 <data directory>/live-comments/live-comments-line.py --copy"}`
+     `"statusLine": {"type": "command", "command": "sh <data directory>/live-comments/py <data directory>/live-comments/live-comments-line.py --copy"}`
      with the absolute path.
    - **`command` runs a script file**: add the line at the end of the script. The script has to keep its stdin to pass it on; for example, a Bash script that starts with `input=$(cat)` gets:
      ```bash
-     lc_line=$(printf '%s' "$input" | python3 "$HOME/.local/share/live-comments/live-comments-line.py" --copy)
+     lc_line=$(printf '%s' "$input" | sh "$HOME/.local/share/live-comments/py" "$HOME/.local/share/live-comments/live-comments-line.py" --copy)
      [ -n "$lc_line" ] && printf '\n%s' "$lc_line"
      ```
      For a script in another language, call the line script the same way: pass the JSON input on stdin and print its output on a new line when it is not empty.
    - **`command` is an inline command**: move it into a new script `~/.claude/statusline-command.sh` that saves stdin in `input`, runs the old command with `printf '%s' "$input" | …`, and then adds the line as above; make the script the `command`. Keep the other `statusLine` fields, such as `padding`.
 4. **Check** the line script with this session's id:
-   `printf '{"session_id":"%s"}' "${CLAUDE_SESSION_ID}" | python3 ~/.local/share/live-comments/live-comments-line.py --copy`
+   `printf '{"session_id":"%s"}' "${CLAUDE_SESSION_ID}" | sh ~/.local/share/live-comments/py ~/.local/share/live-comments/live-comments-line.py --copy`
    It prints the line if this session has a discussion (`/live-comments:start`); otherwise its output is empty, which is correct too.
 5. Tell the user what was changed and that the click on ⧉ needs a terminal with OSC 8 links. If ⧉ is shown but not clickable, Claude Code may not have detected link support in the terminal: start it with `FORCE_HYPERLINK=1 claude`.
 

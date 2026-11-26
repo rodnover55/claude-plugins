@@ -3,7 +3,7 @@ name: statusbar
 description: "Prepare or change the status bar at the bottom of the live-comments discussion pages. The bar is described by the user's own file ~/.config/live-comments/statusbar.py (Python) or statusbar.js (JavaScript), kept outside the plugin: it turns the Claude Code status line data into items made of the standard blocks of the pages — text, chip, meter, dot, link, countdown, age. The skill creates the file from the plugin's default bar, changes it at the user's request, switches its language, resets or removes it, and checks it. Use when the user asks to set up, change or customize the status bar of the discussion pages, or invokes /live-comments:statusbar."
 argument-hint: "[what to change | python | js | reset | remove]"
 allowed-tools:
-  - Bash(python3 ${CLAUDE_SKILL_DIR}/check.py *)
+  - Bash(sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/check.py *)
 ---
 
 # live-comments status bar
@@ -15,7 +15,7 @@ The status bar is a line at the bottom of every discussion page of the session: 
 - **How the bar reaches the pages**: while a discussion page of the session is open, the live-comments server runs the file once a minute, the first time at once, and the pages redraw the bar without a reload. Without the file the pages hide the bar; if the file fails or runs longer than 1 second, they keep the previous bar.
 - **The input**: by default the server builds the JSON from the session transcript — without the cost, the durations and the pull request — and gets the 5-hour and 7-day rate limits with a small background `claude -p` request at most once in 5 minutes. Custom data sent to `POST http://127.0.0.1:8765/api/<session id>/statusline` — such as the cost and the pull request from the status line JSON of Claude Code, or fields of the user's own — are added where the server computes no such field; each send updates only its own fields (see the protocol).
 
-`CHECK` below is `python3 ${CLAUDE_SKILL_DIR}/check.py`: it runs the user's file the way the server does, on a sample of the status line JSON with all fields, checks the output against the protocol and prints the bar as text with the tooltips of its items, or the errors. `CHECK <file>` checks another file.
+`CHECK` below is `sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/check.py`: it runs the user's file the way the server does, on a sample of the status line JSON with all fields, checks the output against the protocol and prints the bar as text with the tooltips of its items, or the errors. `CHECK <file>` checks another file.
 
 ## Preparing the file
 

@@ -75,4 +75,4 @@ The colors follow the light or dark theme of the page.
 
 ## Check
 
-`python3 <statusbar skill directory>/check.py [FILE]` runs the file the way the live-comments server does, on a sample of the status line JSON, checks the output against this protocol and prints the bar as text with the tooltips, or the errors. Without `FILE` it checks the user's file.
+`sh <statusbar skill directory>/../start/py <statusbar skill directory>/check.py [FILE]` runs the file the way the live-comments server does, on a sample of the status line JSON, checks the output against this protocol and prints the bar as text with the tooltips, or the errors. Without `FILE` it checks the user's file.

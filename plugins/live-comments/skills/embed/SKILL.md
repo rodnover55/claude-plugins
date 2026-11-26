@@ -3,7 +3,7 @@ name: embed
 description: "Embed the live-comments discussion of the current Claude Code session into an HTML page: write the session's embed.js script line into the HTML file, or into the source the page is built from — a template, a layout, a generator or a Markdown document — so that selecting a fragment of the page in the browser opens a topic of the session. The input is the path to the HTML file or to its source. Starts the discussion first if the session has none. Use when the user asks to add live comments to an HTML page, report or its source, to embed or connect a page to the discussion, or invokes /live-comments:embed."
 argument-hint: "<path to .html or its source>"
 allowed-tools:
-  - Bash(python3 ${CLAUDE_SKILL_DIR}/../start/cm.py *)
+  - Bash(sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/../start/cm.py *)
 ---
 
 # live-comments:embed — embed the discussion into an HTML page
@@ -16,7 +16,7 @@ The discussion of a session is started by the `start` skill (`/live-comments:sta
 
 In the page opened in the browser, the script turns a selected fragment into a topic of the session and highlights fragments that have topics. The script works only in a page opened as a file (`file://`): the server does not serve pages and does not answer pages served over HTTP by an application or a dev server (Flask, Django, PHP, Rails, the dev server of a bundler).
 
-`CM` below is `python3 ${CLAUDE_SKILL_DIR}/../start/cm.py`. The commands take the session from `CLAUDE_CODE_SESSION_ID`.
+`CM` below is `sh ${CLAUDE_SKILL_DIR}/../start/py ${CLAUDE_SKILL_DIR}/../start/cm.py`. The commands take the session from `CLAUDE_CODE_SESSION_ID`.
 
 - `CM embed <file>` — writes the line before the last `</body>` of the file outside HTML and template comments (in any letter case, with the indent of `</body>`), or at its end after a blank line if there is no `</body>`, and prints the `file://` path. A line written by `CM embed` before, of this or another session, is replaced; other scripts, and examples of the line that are not on a line of their own, stay. The rest of the file, its line endings included, stays as it was, and a repeated run changes nothing. A file not in UTF-8 is not changed: the command says so.
 - `CM embed --print` — prints the line without writing it.
